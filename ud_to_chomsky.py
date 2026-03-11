@@ -67,6 +67,12 @@ def is_passive(tokens):
 
 
 # Verbi che selezionano "essere" (inaccusativi e pseudo-copulativi)
+VERBI_MODALI = {
+    "volere", "potere", "dovere", "sapere", "riuscire", "osare",
+    "solere", "cominciare", "continuare", "smettere", "cessare",
+    "iniziare", "finire", "stare",
+}
+
 VERBI_INACCUSATIVI = {
     "andare", "venire", "arrivare", "partire", "uscire", "entrare",
     "nascere", "morire", "cadere", "salire", "scendere", "tornare",
@@ -382,11 +388,12 @@ def enrich_with_silent_subjects(tokens):
     has_nsubj = any(t["deprel"] in ("nsubj", "nsubj:pass")
                     and t["head"] == root["id"] for t in tokens)
 
-    # La frase è finita se il root è finito OPPURE ha un ausiliare finito
+    # La frase è finita se il root è finito OPPURE ha un ausiliare/modale finito
     aux_finite = any(
-        t["upos"] == "AUX" and t["head"] == root["id"]
+        t["head"] == root["id"]
         and _mood(t) in ("Ind", "Sub", "Cnd", "Imp")
         for t in tokens
+        if t["upos"] in ("AUX", "VERB")
     )
     root_finite = _mood(root) in ("Ind", "Sub", "Cnd", "Imp")
 
@@ -423,9 +430,15 @@ def enrich_with_silent_subjects(tokens):
             continue
         if t["deprel"] == "root":
             # Soggettiva infinitiva: PRO_arb
+            # MA non se c'è un modale finito (es. "voglio andare" → pro, non PRO_arb)
             has_nsubj_inf = any(tk["deprel"] == "nsubj"
                                 and tk["head"] == t["id"] for tk in tokens)
-            if not has_nsubj_inf:
+            has_modal = any(
+                tk["head"] == t["id"]
+                and _mood(tk) in ("Ind", "Sub", "Cnd", "Imp")
+                for tk in tokens
+            )
+            if not has_nsubj_inf and not has_modal:
                 node = build_pro_node("PRO_arb", index="j",
                                       color=color_for("j"))
                 silent_nodes[t["id"]] = ("subj", node, "PRO_arb")
@@ -784,6 +797,27 @@ def build_tp(tokens, tipo_verbo=None):
     )
     aux_pass = next((t for t in tokens if t["deprel"] == "aux:pass"), None)
 
+    # Modale: root è infinito con aux modale (volere, potere, dovere…)
+    # In UDPipe: root=infinito, aux=modale finito
+    # Struttura: T=modale, V=infinito (sale a v), xcomp eventuale
+    modal_aux = None
+    if _verbform(root) == "Inf" and not aux_t:
+        modal_aux = next(
+            (t for t in tokens
+             if t["deprel"] == "aux" and t["head"] == root["id"]
+             and t["lemma"] in VERBI_MODALI),
+            None
+        )
+        # Se non trovato come AUX, prova VERB (UDPipe a volte marca i modali come VERB)
+        if not modal_aux:
+            modal_aux = next(
+                (t for t in tokens
+                 if t["deprel"] in ("aux", "ccomp", "xcomp")
+                 and t["head"] == root["id"]
+                 and t["lemma"] in VERBI_MODALI),
+                None
+            )
+
     verb_index = "i"
     subj_index = "j"
     wh_index   = "k"
@@ -945,6 +979,34 @@ def build_tp(tokens, tipo_verbo=None):
         t_node.children = [Node(root["form"], word=root["form"],
                                 index=verb_index, is_head=True, color=v_color)]
         main_complement = vp
+
+    elif modal_aux:
+        # Struttura modale: T = modale, V = infinito
+        # Oggetto e complementi dipendono dall'infinito (root in UD)
+        eff_obj = None
+        if has_clitic_obj:
+            eff_obj = {"id": -1, "form": f"t_{cl_index}", "lemma": "t",
+                       "upos": "PRON", "feats": f"Index={cl_index}",
+                       "head": root["id"], "deprel": "obj"}
+        elif obj_token:
+            eff_obj = obj_token
+
+        vp_shell = build_vp_shell(
+            root, tokens, subj_token, eff_obj,
+            verb_index=verb_index, subj_index=subj_index,
+            wh_index=wh_index if wh_obl else None,
+            wh_case_token=wh_case_token,
+            wh_noun_token=wh_noun_token,
+            has_aux=True,   # infinito rimane in V, modale è in T
+            cl_acc=cl_acc, cl_refl=cl_refl,
+            cl_index=cl_index, has_clitic_obj=has_clitic_obj,
+            has_clitic_refl=has_clitic_refl,
+            xcomp_node=xcomp_node,
+        )
+        t_node = Node("T", is_head=True, color=color_for(verb_index))
+        t_node.children = [Node(modal_aux["form"], word=modal_aux["form"],
+                                is_head=True, color=color_for(verb_index))]
+        main_complement = vp_shell
 
     elif aux_t:
         # Oggetto: se c'è clitico acc, usa traccia t_k; altrimenti obj_token
