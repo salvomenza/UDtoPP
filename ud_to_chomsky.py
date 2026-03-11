@@ -3,13 +3,13 @@ ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
 
 Convenzioni:
-- DP invece di NP; little v (vP); TP invece di IP
+- SD invece di NP; little v (Sv); ST invece di IP
 - X' eliminata se unico figlio è la testa (no spec, no aggiunto)
-- DP → D → nome proprio/pronome (senza NP)
-- DP → D' → D + NP → N' → [AP spec +] N (per nomi comuni)
-- Passivo: v [+pass], AspP per participio passivo
+- SD → D → nome proprio/pronome (senza NP)
+- SD → D' → D + SN → N' → [AP spec +] N (per nomi comuni)
+- Passivo: v [+pass], SAsp per participio passivo
 - Aggiunti: sdoppiamento XP → XP + YP
-- CP con [+wh] per interrogative; movimento wh a spec-CP
+- FR con [+wh] per interrogative; movimento wh a spec-CP
 - Ditransitivi: struttura larsoneana (oggetto diretto in spec-VP esterno)
 - obl con PronType=Int → wh; obl senza → aggiunto PP
 """
@@ -95,7 +95,7 @@ def is_wh_token(token):
     return "PronType=Int" in token.get("feats", "")
 
 
-# ── Costruzione DP ───────────────────────────────────────────────────────────
+# ── Costruzione SD ───────────────────────────────────────────────────────────
 
 def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
     dp_color = color or (color_for(index) if index else "#2c1e0f")
@@ -104,6 +104,17 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
         # traccia: nodo t_j diretto, senza etichetta DP
         t_node = Node("t", word="t", index=index, is_trace=True,
                       is_head=True, color=dp_color)
+        return t_node
+
+    # Token fittizio per traccia clitico (id negativo)
+    if noun_token.get("id", 0) < 0:
+        idx = None
+        for f in noun_token.get("feats", "").split("|"):
+            if f.startswith("Index="):
+                idx = f.split("=")[1]
+        idx = idx or index or "k"
+        t_node = Node("t", word="t", index=idx, is_trace=True,
+                      is_head=True, color=color_for(idx))
         return t_node
 
     det_token = next(
@@ -117,7 +128,7 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
         None
     )
 
-    dp = Node("DP", index=index, color=dp_color)
+    dp = Node("SD", index=index, color=dp_color)
 
     if noun_token["upos"] in ("PROPN", "PRON"):
         d = Node("D", is_head=True, color=dp_color)
@@ -133,12 +144,12 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
                           is_head=True, color="#2c1e0f")
             d.children = [d_word]
 
-            np = Node("NP", color="#2c1e0f")
+            np = Node("SN", color="#2c1e0f")
 
             if poss_token:
-                # NP → N' → AP(poss) + N
+                # SN → N' → SA(poss) + N
                 n_prime = Node("N'", color="#2c1e0f")
-                ap = Node("AP", color="#2c1e0f")
+                ap = Node("SA", color="#2c1e0f")
                 ap_word = Node(poss_token["form"], word=poss_token["form"],
                                is_head=True, color="#2c1e0f")
                 ap.children = [ap_word]
@@ -158,10 +169,10 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
                               is_head=True, color="#2c1e0f")
                 n.children = [n_word]
                 np.children = [n]
-                # no spec → DP → D + NP direttamente
+                # no spec → SD → D + SN direttamente
                 dp.children = [d, np]
 
-            # aggiunti al nome (nmod): sdoppiamento NP → NP + PP
+            # aggiunti al nome (nmod): sdoppiamento SN → SN + PP
             nmod_tokens = [t for t in tokens
                            if t["deprel"] == "nmod" and t["head"] == noun_token["id"]]
             for nmod_t in nmod_tokens:
@@ -175,28 +186,28 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
                 else:
                     pp = build_dp(nmod_t, tokens)
                 # trova l'NP attuale dentro dp e sdoppia
-                # cerca NP tra i figli diretti o tramite D'
+                # cerca SN tra i figli diretti o tramite D'
                 current_np = None
                 for child in dp.children:
-                    if child.label == "NP":
+                    if child.label == "SN":
                         current_np = child
                         break
                     elif child.label == "D'":
                         for gc in child.children:
-                            if gc.label == "NP":
+                            if gc.label == "SN":
                                 current_np = gc
                                 break
                 if current_np is not None:
-                    outer_np = Node("NP", color="#2c1e0f")
+                    outer_np = Node("SN", color="#2c1e0f")
                     outer_np.children = [current_np, pp]
                     # sostituisci current_np con outer_np
                     for child in dp.children:
-                        if child.label == "NP":
+                        if child.label == "SN":
                             dp.children[dp.children.index(child)] = outer_np
                             break
                         elif child.label == "D'":
                             for i, gc in enumerate(child.children):
-                                if gc.label == "NP":
+                                if gc.label == "SN":
                                     child.children[i] = outer_np
                                     break
         else:
@@ -209,7 +220,7 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
     return dp
 
 
-# ── Costruzione PP ───────────────────────────────────────────────────────────
+# ── Costruzione SP ───────────────────────────────────────────────────────────
 
 def build_pp(case_token, noun_token, tokens, index=None, is_trace=False, color=None):
     pp_color = color or (color_for(index) if index else "#2c1e0f")
@@ -219,7 +230,7 @@ def build_pp(case_token, noun_token, tokens, index=None, is_trace=False, color=N
                  is_head=True, color=pp_color)
         return t
 
-    pp = Node("PP", index=index, color=pp_color)
+    pp = Node("SP", index=index, color=pp_color)
     p_prime = Node("P'", color=pp_color)
     p = Node("P", is_head=True, color=pp_color)
     p_word = Node(case_token["form"], word=case_token["form"],
@@ -231,10 +242,10 @@ def build_pp(case_token, noun_token, tokens, index=None, is_trace=False, color=N
     return pp
 
 
-# ── Costruzione AdvP ─────────────────────────────────────────────────────────
+# ── Costruzione SAvv ─────────────────────────────────────────────────────────
 
 def build_advp(adv_token):
-    advp = Node("AdvP")
+    advp = Node("SAvv")
     adv = Node("Adv", is_head=True)
     adv_word = Node(adv_token["form"], word=adv_token["form"], is_head=True)
     adv.children = [adv_word]
@@ -242,14 +253,14 @@ def build_advp(adv_token):
     return advp
 
 
-# ── Costruzione SC (Small Clause) ───────────────────────────────────────────
+# ── Costruzione FR (Small Clause) ───────────────────────────────────────────
 
 def build_sc(subj_index, pred_token, tokens):
     """
-    Costruisce SC → DP(t_j) + XP
-    XP può essere DP (nome), AP (aggettivo), PP (preposizione)
+    Costruisce FR → SD(t_j) + XP
+    XP può essere SD (nome), SA (aggettivo), SP (preposizione)
     """
-    sc = Node("SC")
+    sc = Node("FR")
     subj_color = color_for(subj_index)
 
     # traccia del soggetto in spec-SC: t_j diretto, senza etichetta DP
@@ -259,8 +270,8 @@ def build_sc(subj_index, pred_token, tokens):
     # predicato
     upos = pred_token["upos"]
     if upos == "ADJ":
-        # AP → A → word
-        ap = Node("AP")
+        # SA → A → word
+        ap = Node("SA")
         a = Node("A", is_head=True)
         a_word = Node(pred_token["form"], word=pred_token["form"], is_head=True)
         a.children = [a_word]
@@ -282,11 +293,186 @@ def build_sc(subj_index, pred_token, tokens):
     return sc
 
 
-# ── Costruzione VP ───────────────────────────────────────────────────────────
+
+# ── Costruzione nodo pro/PRO ─────────────────────────────────────────────────
+
+def build_pro_node(pro_type, index=None, color=None):
+    """
+    Costruisce un nodo SD per pro/PRO.
+    pro_type: 'pro', 'pro_espl', 'PRO', 'PRO_arb'
+    """
+    dp_color = color or (color_for(index) if index else "#5a4a3a")
+    dp = Node("SD", index=index, color=dp_color)
+    d = Node("D", is_head=True, color=dp_color)
+    word = Node(pro_type, word=pro_type, index=index,
+                is_head=True, color=dp_color, is_trace=False)
+    d.children = [word]
+    dp.children = [d]
+    return dp
+
+
+# ── Rilevamento e aggiunta di pro/PRO ai token ───────────────────────────────
+
+def _get_feats(token):
+    """Estrae il campo feats come stringa."""
+    return token.get("feats", "") or ""
+
+
+def _person(token):
+    feats = _get_feats(token)
+    for f in feats.split("|"):
+        if f.startswith("Person="):
+            return f.split("=")[1]
+    return None
+
+
+def _number(token):
+    feats = _get_feats(token)
+    for f in feats.split("|"):
+        if f.startswith("Number="):
+            return f.split("=")[1]
+    return None
+
+
+def _verbform(token):
+    feats = _get_feats(token)
+    for f in feats.split("|"):
+        if f.startswith("VerbForm="):
+            return f.split("=")[1]
+    return None
+
+
+def _mood(token):
+    feats = _get_feats(token)
+    for f in feats.split("|"):
+        if f.startswith("Mood="):
+            return f.split("=")[1]
+    return None
+
+
+def enrich_with_silent_subjects(tokens):
+    """
+    Aggiunge token sintetici per pro/PRO mancanti.
+    Restituisce una lista di token arricchita + dizionario
+    {token_id: Node} per i nodi silenziosi già costruiti.
+    """
+    silent_nodes = {}  # root_id → Node SD(pro/PRO)
+
+    root = next((t for t in tokens if t["deprel"] == "root"), None)
+    if not root:
+        return tokens, silent_nodes
+
+    # ── 1. pro/pro_espl in frase finita ─────────────────────────────────────
+    has_nsubj = any(t["deprel"] in ("nsubj", "nsubj:pass")
+                    and t["head"] == root["id"] for t in tokens)
+
+    # La frase è finita se il root è finito OPPURE ha un ausiliare finito
+    aux_finite = any(
+        t["upos"] == "AUX" and t["head"] == root["id"]
+        and _mood(t) in ("Ind", "Sub", "Cnd", "Imp")
+        for t in tokens
+    )
+    root_finite = _mood(root) in ("Ind", "Sub", "Cnd", "Imp")
+
+    if not has_nsubj and (root_finite or aux_finite):
+        # Determina il tipo:
+        # pro_espl: verbi meteorologici (piove, nevica, ecc.) o
+        #           inaccusativi presentativi (arriva un treno)
+        #           = nessun obj, nessun obl:agent, nessun nsubj, ma c'è un
+        #             SD postverbale identificabile come "soggetto logico"
+        is_weather = root["lemma"] in (
+            "piovere", "nevicare", "grandinare", "tuonare",
+            "lampeggiare", "diluviare", "pioviggare"
+        )
+        has_obj = any(t["deprel"] == "obj" and t["head"] == root["id"]
+                      for t in tokens)
+        # inaccusativo presentativo: c'è un nsubj postverbale oppure un
+        # SD che funge da soggetto logico (UDPipe spesso lo analizza come
+        # nsubj comunque, ma per sicurezza controlliamo)
+        is_presentative = (not has_obj and not is_weather
+                           and root["upos"] == "VERB"
+                           and _verbform(root) == "Fin")
+
+        if is_weather or is_presentative:
+            pro_type = "pro_espl"
+        else:
+            pro_type = "pro"
+
+        node = build_pro_node(pro_type, index="j", color=color_for("j"))
+        silent_nodes[root["id"]] = ("subj", node, pro_type)
+
+    # ── 2. PRO / PRO_arb per verbi all'infinito ─────────────────────────────
+    for t in tokens:
+        if _verbform(t) != "Inf":
+            continue
+        if t["deprel"] == "root":
+            # Soggettiva infinitiva: PRO_arb
+            has_nsubj_inf = any(tk["deprel"] == "nsubj"
+                                and tk["head"] == t["id"] for tk in tokens)
+            if not has_nsubj_inf:
+                node = build_pro_node("PRO_arb", index="j",
+                                      color=color_for("j"))
+                silent_nodes[t["id"]] = ("subj", node, "PRO_arb")
+        else:
+            # Infinito dipendente: cerca controllore
+            has_nsubj_inf = any(tk["deprel"] in ("nsubj", "nsubj:pass")
+                                and tk["head"] == t["id"] for tk in tokens)
+            if has_nsubj_inf:
+                continue
+            # Cerca controllore: il soggetto della frase matrice
+            matrix_root_id = t["head"]
+            controller = next(
+                (tk for tk in tokens
+                 if tk["deprel"] in ("nsubj", "nsubj:pass")
+                 and tk["head"] == matrix_root_id),
+                None
+            )
+            if controller:
+                pro_type = "PRO"
+            else:
+                pro_type = "PRO_arb"
+            node = build_pro_node(pro_type, index="j",
+                                  color=color_for("j"))
+            silent_nodes[t["id"]] = ("subj", node, pro_type)
+
+    return tokens, silent_nodes
+
+
+# ── Rilevamento clitici ───────────────────────────────────────────────────────
+
+def get_clitic_tokens(tokens, head_id):
+    """
+    Restituisce i token clitici (accusativo/riflessivo) dipendenti da head_id.
+    UDPipe marca i clitici come:
+      - obj / expl:pv  con upos=PRON e posizione preverbale
+      - expl:refl      per riflessivi
+    """
+    clitics = []
+    for t in tokens:
+        if t["head"] != head_id:
+            continue
+        if t["upos"] != "PRON":
+            continue
+        deprel = t["deprel"]
+        feats = _get_feats(t)
+        # clitico accusativo: obj o iobj con forma breve
+        if deprel in ("obj", "iobj", "expl:pv"):
+            if "Clitic=Yes" in feats or t["form"].lower() in (
+                    "lo", "la", "li", "le", "mi", "ti", "ci", "vi",
+                    "gli", "ne", "me", "te", "ce", "ve", "glielo",
+                    "gliela", "glieli", "gliele"):
+                clitics.append(("acc", t))
+        # riflessivo
+        elif deprel in ("expl:refl", "expl"):
+            clitics.append(("refl", t))
+    return clitics
+
+
+# ── Costruzione SV ───────────────────────────────────────────────────────────
 
 def build_vp(verb_token, tokens, verb_index="i", obj_token=None,
              wh_pp=None, verb_is_trace=False):
-    vp = Node("VP")
+    vp = Node("SV")
     v_color = color_for(verb_index)
 
     v = Node("V", is_head=True, color=v_color)
@@ -310,52 +496,88 @@ def build_vp(verb_token, tokens, verb_index="i", obj_token=None,
     return vp
 
 
-# ── Costruzione vP shell ──────────────────────────────────────────────────────
+# ── Costruzione Sv shell ──────────────────────────────────────────────────────
 
 def build_vp_shell(verb_token, tokens, subj_token, obj_token,
                    verb_index="i", subj_index="j", passive=False,
                    wh_index=None, wh_case_token=None, wh_noun_token=None,
-                   has_aux=False):
+                   has_aux=False,
+                   cl_acc=None, cl_refl=None, cl_index="k",
+                   has_clitic_obj=False, has_clitic_refl=False):
     v_color = color_for(verb_index)
     subj_color = color_for(subj_index)
+    cl_color = color_for(cl_index)
 
     larsonian = (wh_index is not None and wh_case_token is not None
-                 and obj_token is not None)
+                 and obj_token is not None and not has_clitic_obj)
 
     if larsonian:
-        # Ditransitivo larsoneano: obj in spec-VP esterno, PP(t_k) in VP interno
         wh_trace_pp = build_pp(wh_case_token, wh_noun_token, tokens,
                                index=wh_index, is_trace=True,
                                color=color_for(wh_index))
         inner_vp = build_vp(verb_token, tokens, verb_index=verb_index,
                             wh_pp=wh_trace_pp, verb_is_trace=True)
-
         v_inner = Node("V", is_head=True, color=v_color)
         t_v = Node("t", word="t", index=verb_index, is_trace=True,
                    is_head=True, color=v_color)
         v_inner.children = [t_v]
-
         v_prime_outer = Node("V'")
         v_prime_outer.children = [v_inner, inner_vp]
-
         obj_dp = build_dp(obj_token, tokens)
-        outer_vp = Node("VP")
+        outer_vp = Node("SV")
         outer_vp.children = [obj_dp, v_prime_outer]
+
+    elif has_clitic_obj:
+        # Clitico acc: traccia t_k in posizione oggetto
+        t_cl = Node("t", word="t", index=cl_index, is_trace=True,
+                    is_head=True, color=cl_color)
+        vp_with_trace = Node("SV")
+        v_node = Node("V", is_head=True, color=v_color)
+        v_node.children = [Node("t", word="t", index=verb_index, is_trace=True,
+                                is_head=True, color=v_color)]
+        vp_with_trace.children = [v_node, t_cl]
+        outer_vp = vp_with_trace
+
+    elif has_clitic_refl:
+        # Riflessivo: traccia t_k in posizione oggetto
+        t_cl = Node("t", word="t", index=cl_index, is_trace=True,
+                    is_head=True, color=cl_color)
+        vp_with_trace = Node("SV")
+        v_node = Node("V", is_head=True, color=v_color)
+        v_node.children = [Node("t", word="t", index=verb_index, is_trace=True,
+                                is_head=True, color=v_color)]
+        vp_with_trace.children = [v_node, t_cl]
+        outer_vp = vp_with_trace
 
     else:
         outer_vp = build_vp(verb_token, tokens, verb_index=verb_index,
                             obj_token=obj_token, verb_is_trace=True)
 
+    # Costruzione v con eventuale clitico incorporato
     v_little = Node("v", is_head=True,
                     color=v_color if not passive else "#2c1e0f")
     if passive:
         v_word = Node("[+pass]", word="[+pass]", is_head=True, color="#2c1e0f")
+    elif has_clitic_obj and cl_acc:
+        cl_form = cl_acc["form"]
+        if has_aux:
+            v_label = f"{cl_form}+{verb_token['form']}"
+        else:
+            v_label = f"{cl_form}+t_{verb_index}"
+        v_word = Node(v_label, word=v_label, index=cl_index,
+                      is_head=True, color=cl_color)
+    elif has_clitic_refl and cl_refl:
+        cl_form = cl_refl["form"]
+        if has_aux:
+            v_label = f"{cl_form}+{verb_token['form']}"
+        else:
+            v_label = f"{cl_form}+t_{verb_index}"
+        v_word = Node(v_label, word=v_label, index=cl_index,
+                      is_head=True, color=cl_color)
     elif has_aux:
-        # con ausiliare: participio sale V→v, forma fonetica in v
         v_word = Node(verb_token["form"], word=verb_token["form"],
                       index=verb_index, is_head=True, color=v_color)
     else:
-        # senza ausiliare: verbo sale V→v→T, solo traccia in v
         v_word = Node("t", word="t", index=verb_index, is_trace=True,
                       is_head=True, color=v_color)
     v_little.children = [v_word]
@@ -363,7 +585,7 @@ def build_vp_shell(verb_token, tokens, subj_token, obj_token,
     v_prime = Node("v'")
     v_prime.children = [v_little, outer_vp]
 
-    vp = Node("vP")
+    vp = Node("Sv")
     if passive:
         vp.children = [v_prime]
     else:
@@ -377,10 +599,10 @@ def build_vp_shell(verb_token, tokens, subj_token, obj_token,
     return vp
 
 
-# ── Avvolgi in CP ────────────────────────────────────────────────────────────
+# ── Avvolgi in FR ────────────────────────────────────────────────────────────
 
 def wrap_cp(tp, wh_xp):
-    cp = Node("CP")
+    cp = Node("SC")
     c_prime = Node("C'")
     c = Node("C", is_head=True)
     c_word = Node("[+wh]", word="[+wh]", is_head=True)
@@ -390,27 +612,50 @@ def wrap_cp(tp, wh_xp):
     return cp
 
 
-# ── Costruzione TP (punto di ingresso) ───────────────────────────────────────
+# ── Costruzione ST (punto di ingresso) ───────────────────────────────────────
 
 def build_tp(tokens):
     root = next((t for t in tokens if t["deprel"] == "root"), None)
     if not root:
         raise ValueError("Nessun token root trovato")
 
+    # Arricchimento con pro/PRO
+    tokens, silent_nodes = enrich_with_silent_subjects(tokens)
+
     passive = is_passive(tokens)
-    unaccusative = is_unaccusative(tokens)
     copular = is_copular(tokens)
+    # Rilevamento clitici anticipato (serve per is_unaccusative)
+    _clitics_pre = get_clitic_tokens(tokens, root["id"])
+    _has_refl_pre = any(typ == "refl" for typ, _ in _clitics_pre)
+    # Se c'è riflessivo, non è inaccusativo (è transitivo con clitico)
+    unaccusative = is_unaccusative(tokens) and not _has_refl_pre
 
     subj_token = next(
         (t for t in tokens
          if t["deprel"] in ("nsubj", "nsubj:pass") and t["head"] == root["id"]),
         None
     )
+    # nodo pro/PRO se soggetto esplicito assente
+    silent_subj_node = None
+    if not subj_token and root["id"] in silent_nodes:
+        _, silent_subj_node, _ = silent_nodes[root["id"]]
+
+    # Rilevamento clitici (prima di obj_token, per escluderli)
+    clitics = get_clitic_tokens(tokens, root["id"])
+    cl_acc  = next((t for typ, t in clitics if typ == "acc"), None)
+    cl_refl = next((t for typ, t in clitics if typ == "refl"), None)
+    cl_index = "k"
+    # cl_ids: id dei token clitici, da escludere da obj_token
+    cl_ids = {t["id"] for _, t in clitics}
+
     obj_token = next(
         (t for t in tokens
-         if t["deprel"] == "obj" and t["head"] == root["id"]),
+         if t["deprel"] == "obj" and t["head"] == root["id"]
+         and t["id"] not in cl_ids),
         None
     )
+    has_clitic_obj  = (cl_acc  is not None)
+    has_clitic_refl = (cl_refl is not None)
     agent_token = next(
         (t for t in tokens
          if t["deprel"] == "obl:agent" and t["head"] == root["id"]),
@@ -457,8 +702,28 @@ def build_tp(tokens):
             wh_xp = build_dp(wh_noun_token, tokens, index=wh_index,
                              color=color_for(wh_index))
 
-    subj_dp = build_dp(subj_token, tokens, index=subj_index,
-                       color=color_for(subj_index)) if subj_token else None
+    # Soggetto: token esplicito oppure nodo pro/PRO silenzioso
+    if subj_token:
+        subj_dp = build_dp(subj_token, tokens, index=subj_index,
+                           color=color_for(subj_index))
+    elif silent_subj_node:
+        subj_dp = silent_subj_node
+    else:
+        subj_dp = None
+
+    # Se c'è clitico oggetto, costruiamo la traccia t_k in SV
+    # e il clitico viene incorporato in v (etichetta composta)
+    cl_index = "k"
+    cl_color = color_for(cl_index)
+    if has_clitic_obj:
+        # la traccia sarà l'oggetto in SV
+        cl_trace_token = {"id": -1, "form": "t", "lemma": "t",
+                          "upos": "PRON", "feats": "", "head": root["id"],
+                          "deprel": "obj"}
+    if has_clitic_refl:
+        cl_refl_trace_token = {"id": -2, "form": "t", "lemma": "t",
+                               "upos": "PRON", "feats": "", "head": root["id"],
+                               "deprel": "obj"}
 
     if copular:
         # Copulare con Small Clause
@@ -477,8 +742,8 @@ def build_tp(tokens):
         sc = build_sc(subj_index, root, tokens)
 
         if cop_token and cop_token["upos"] == "AUX" and aux_cop:
-            # Marco è stato un medico: T(è) + AspP(stato + SC)
-            asp_p = Node("AspP")
+            # Marco è stato un medico: T(è) + SAsp(stato + SC)
+            asp_p = Node("SAsp")
             asp = Node("Asp", is_head=True)
             asp_word = Node(cop_token["form"], word=cop_token["form"], is_head=True)
             asp.children = [asp_word]
@@ -505,13 +770,13 @@ def build_tp(tokens):
                       is_head=True, color=v_color)
         v_node.children = [v_word]
 
-        t_subj_inner = Node("DP", index=subj_index, is_trace=True,
+        t_subj_inner = Node("SD", index=subj_index, is_trace=True,
                             color=subj_color)
         t_word = Node("t", word="t", index=subj_index, is_trace=True,
                       is_head=True, color=subj_color)
         t_subj_inner.children = [t_word]
 
-        inner_vp = Node("VP")
+        inner_vp = Node("SV")
         inner_vp.children = [v_node, t_subj_inner]
 
         v_little = Node("v", is_head=True)
@@ -521,7 +786,7 @@ def build_tp(tokens):
         v_prime = Node("v'")
         v_prime.children = [v_little, inner_vp]
 
-        inner_vp_shell = Node("vP")
+        inner_vp_shell = Node("Sv")
         inner_vp_shell.children = [v_prime]
 
         if agent_token:
@@ -532,7 +797,7 @@ def build_tp(tokens):
             )
             if case_t:
                 pp = build_pp(case_t, agent_token, tokens)
-                outer_vp = Node("vP")
+                outer_vp = Node("Sv")
                 outer_vp.children = [inner_vp_shell, pp]
             else:
                 outer_vp = inner_vp_shell
@@ -540,7 +805,7 @@ def build_tp(tokens):
             outer_vp = inner_vp_shell
 
         if aux_pass:
-            asp_p = Node("AspP")
+            asp_p = Node("SAsp")
             asp = Node("Asp", is_head=True)
             asp_word = Node(aux_pass["form"], word=aux_pass["form"], is_head=True)
             asp.children = [asp_word]
@@ -563,13 +828,13 @@ def build_tp(tokens):
                       index=verb_index, is_head=True, color=v_color)
         v_node.children = [v_word]
 
-        t_subj_inner = Node("DP", index=subj_index, is_trace=True,
+        t_subj_inner = Node("SD", index=subj_index, is_trace=True,
                             color=subj_color)
         t_word = Node("t", word="t", index=subj_index, is_trace=True,
                       is_head=True, color=subj_color)
         t_subj_inner.children = [t_word]
 
-        vp = Node("VP")
+        vp = Node("SV")
         vp.children = [v_node, t_subj_inner]
 
         t_node = Node("T", is_head=True)
@@ -577,25 +842,49 @@ def build_tp(tokens):
         main_complement = vp
 
     elif aux_t:
+        # Oggetto: se c'è clitico acc, usa traccia t_k; altrimenti obj_token
+        eff_obj = None
+        if has_clitic_obj:
+            # Token fittizio per la traccia del clitico
+            eff_obj = {"id": -1, "form": f"t_{cl_index}", "lemma": "t",
+                       "upos": "PRON", "feats": f"Index={cl_index}",
+                       "head": root["id"], "deprel": "obj"}
+        elif obj_token:
+            eff_obj = obj_token
+
         vp_shell = build_vp_shell(
-            root, tokens, subj_token, obj_token,
+            root, tokens, subj_token, eff_obj,
             verb_index=verb_index, subj_index=subj_index,
             wh_index=wh_index if wh_obl else None,
             wh_case_token=wh_case_token,
             wh_noun_token=wh_noun_token,
             has_aux=True,
+            cl_acc=cl_acc, cl_refl=cl_refl,
+            cl_index=cl_index, has_clitic_obj=has_clitic_obj,
+            has_clitic_refl=has_clitic_refl,
         )
         t_node = Node("T", is_head=True)
         t_node.children = [Node(aux_t["form"], word=aux_t["form"], is_head=True)]
         main_complement = vp_shell
 
     else:
+        eff_obj = None
+        if has_clitic_obj:
+            eff_obj = {"id": -1, "form": f"t_{cl_index}", "lemma": "t",
+                       "upos": "PRON", "feats": f"Index={cl_index}",
+                       "head": root["id"], "deprel": "obj"}
+        elif obj_token:
+            eff_obj = obj_token
+
         vp_shell = build_vp_shell(
-            root, tokens, subj_token, obj_token,
+            root, tokens, subj_token, eff_obj,
             verb_index=verb_index, subj_index=subj_index,
             wh_index=wh_index if wh_obl else None,
             wh_case_token=wh_case_token,
             wh_noun_token=wh_noun_token,
+            cl_acc=cl_acc, cl_refl=cl_refl,
+            cl_index=cl_index, has_clitic_obj=has_clitic_obj,
+            has_clitic_refl=has_clitic_refl,
         )
         t_node = Node("T", is_head=True, color=color_for(verb_index))
         t_node.children = [Node(root["form"], word=root["form"],
@@ -603,7 +892,7 @@ def build_tp(tokens):
                                 color=color_for(verb_index))]
         main_complement = vp_shell
 
-    # ── Aggiunti PP da obl non-wh ────────────────────────────────────────────
+    # ── Aggiunti SP da obl non-wh ────────────────────────────────────────────
     for obl_t in adj_obl_tokens:
         case_t = next(
             (t for t in tokens
@@ -611,21 +900,21 @@ def build_tp(tokens):
             None
         )
         adjunct = build_pp(case_t, obl_t, tokens) if case_t else build_dp(obl_t, tokens)
-        outer = Node("vP")
+        outer = Node("Sv")
         outer.children = [main_complement, adjunct]
         main_complement = outer
 
     # ── Aggiunti avverbiali ──────────────────────────────────────────────────
     for adv_token in advmod_tokens:
-        outer = Node("vP")
+        outer = Node("Sv")
         outer.children = [main_complement, build_advp(adv_token)]
         main_complement = outer
 
-    # ── Assembla T' e TP ────────────────────────────────────────────────────
+    # ── Assembla T' e ST ────────────────────────────────────────────────────
     t_prime = Node("T'")
     t_prime.children = [t_node, main_complement]
 
-    tp = Node("TP")
+    tp = Node("ST")
     tp.children = [subj_dp, t_prime] if subj_dp else [t_prime]
 
     if wh_xp is not None:
