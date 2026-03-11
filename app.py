@@ -842,6 +842,7 @@ def analizza():
         return jsonify({"error": "Frase vuota"})
 
     # Usa il CoNLL-U pre-calcolato oppure chiama UDPipe
+    ud_svg_native = ""
     if conllu_pre:
         conllu = conllu_pre
     else:
@@ -852,6 +853,7 @@ def analizza():
                 "tokenizer": "",
                 "tagger": "",
                 "parser": "",
+                "output": "conllu",
             }, timeout=10)
             result = resp.json()
             conllu = result.get("result", "")
@@ -859,6 +861,21 @@ def analizza():
                 return jsonify({"error": "UDPipe non ha restituito risultati"})
         except Exception as e:
             return jsonify({"error": f"Errore UDPipe: {str(e)}"})
+
+        # Seconda chiamata per SVG nativo UDPipe
+        try:
+            resp_svg = requests.post(UDPIPE_URL, data={
+                "data": frase,
+                "model": UDPIPE_MODEL,
+                "tokenizer": "",
+                "tagger": "",
+                "parser": "",
+                "output": "svg",
+            }, timeout=10)
+            svg_result = resp_svg.json()
+            ud_svg_native = svg_result.get("result", "")
+        except Exception:
+            ud_svg_native = ""  # fallback silenzioso
 
     # Converti e renderizza
     try:
@@ -877,7 +894,8 @@ def analizza():
 
         tree = build_tp(tokens, tipo_verbo=tipo_verbo)
         svg = tree_to_svg(tree, title=frase)
-        ud_svg = build_ud_svg(tokens)
+        # Usa SVG nativo UDPipe se disponibile, altrimenti fallback artigianale
+        ud_svg = ud_svg_native if ud_svg_native else build_ud_svg(tokens)
         return jsonify({"svg": svg, "conllu": conllu, "ud_svg": ud_svg})
     except Exception as e:
         return jsonify({"error": f"Errore conversione: {str(e)}"})
