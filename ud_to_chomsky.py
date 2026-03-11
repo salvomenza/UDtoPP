@@ -66,6 +66,18 @@ def is_passive(tokens):
     return any(t["deprel"] == "aux:pass" for t in tokens)
 
 
+# Verbi che selezionano "essere" (inaccusativi e pseudo-copulativi)
+VERBI_INACCUSATIVI = {
+    "andare", "venire", "arrivare", "partire", "uscire", "entrare",
+    "nascere", "morire", "cadere", "salire", "scendere", "tornare",
+    "rimanere", "restare", "diventare", "sembrare", "parere",
+    "succedere", "accadere", "avvenire", "risultare", "apparire",
+    "comparire", "sparire", "scomparire", "fuggire", "scappare",
+    "correre", "passare", "finire", "iniziare", "cominciare",
+    "affondare", "esplodere", "crescere", "durare",
+}
+
+
 def is_unaccusative(tokens):
     root = next((t for t in tokens if t["deprel"] == "root"), None)
     if not root:
@@ -78,7 +90,11 @@ def is_unaccusative(tokens):
         nsubj = next((t for t in tokens
                       if t["deprel"] == "nsubj" and t["head"] == root["id"]), None)
         if nsubj:
-            return True
+            # Inaccusativo se: soggetto postverbale E lemma nella lista
+            is_post = nsubj["id"] > root["id"]
+            lemma_ok = root["lemma"] in VERBI_INACCUSATIVI
+            if is_post and lemma_ok:
+                return True
     return False
 
 
@@ -428,11 +444,17 @@ def enrich_with_silent_subjects(tokens):
                 None
             )
             if controller:
+                # Controllore esplicito (es. Maria vuole uscire → PRO_j)
                 pro_type = "PRO"
+                pro_index = "j"   # stesso indice del soggetto matrice
             else:
-                pro_type = "PRO_arb"
-            node = build_pro_node(pro_type, index="j",
-                                  color=color_for("j"))
+                # Nessun soggetto esplicito: il controllore è pro stesso
+                # (es. vuole uscire → pro_j vuole [PRO_j uscire])
+                # Non è PRO_arb — è comunque controllato da pro_j
+                pro_type = "PRO"
+                pro_index = "j"
+            node = build_pro_node(pro_type, index=pro_index,
+                                  color=color_for(pro_index))
             silent_nodes[t["id"]] = ("subj", node, pro_type)
 
     return tokens, silent_nodes
@@ -471,7 +493,7 @@ def get_clitic_tokens(tokens, head_id):
 # ── Costruzione SV ───────────────────────────────────────────────────────────
 
 def build_vp(verb_token, tokens, verb_index="i", obj_token=None,
-             wh_pp=None, verb_is_trace=False):
+             wh_pp=None, verb_is_trace=False, xcomp_node=None):
     vp = Node("SV")
     v_color = color_for(verb_index)
 
@@ -490,6 +512,8 @@ def build_vp(verb_token, tokens, verb_index="i", obj_token=None,
     elif obj_token:
         obj_dp = build_dp(obj_token, tokens)
         vp.children = [v, obj_dp]
+    elif xcomp_node is not None:
+        vp.children = [v, xcomp_node]
     else:
         vp.children = [v]
 
@@ -503,7 +527,9 @@ def build_vp_shell(verb_token, tokens, subj_token, obj_token,
                    wh_index=None, wh_case_token=None, wh_noun_token=None,
                    has_aux=False,
                    cl_acc=None, cl_refl=None, cl_index="k",
-                   has_clitic_obj=False, has_clitic_refl=False):
+                   has_clitic_obj=False, has_clitic_refl=False,
+                   xcomp_node=None):
+    _xcomp_node = xcomp_node  # passato a build_vp nel ramo else
     v_color = color_for(verb_index)
     subj_color = color_for(subj_index)
     cl_color = color_for(cl_index)
@@ -551,7 +577,8 @@ def build_vp_shell(verb_token, tokens, subj_token, obj_token,
 
     else:
         outer_vp = build_vp(verb_token, tokens, verb_index=verb_index,
-                            obj_token=obj_token, verb_is_trace=True)
+                            obj_token=obj_token, verb_is_trace=True,
+                            xcomp_node=_xcomp_node)
 
     # Costruzione v con eventuale clitico incorporato
     v_little = Node("v", is_head=True,
@@ -612,12 +639,69 @@ def wrap_cp(tp, wh_xp):
     return cp
 
 
+
+# ── Costruzione SV con complemento xcomp (infinito) ─────────────────────────
+
+def build_xcomp_vp(verb_token_id, xcomp_token, tokens,
+                   verb_index="i", silent_nodes=None):
+    """
+    Costruisce ST_inf (o SV_inf) per un complemento xcomp infinito.
+    verb_token_id: ignorato, tenuto per compatibilità firma.
+    silent_nodes: dizionario {token_id: ("subj", Node, tipo)} per pro/PRO.
+    """
+    v_color = color_for(verb_index)
+    xcomp_index = "l"  # indice separato per il verbo infinito
+    xcomp_color = color_for(xcomp_index)
+
+    # SV infinito: solo V (intransitivo) o V + obj se xcomp ha obj
+    xcomp_obj = next(
+        (t for t in tokens if t["deprel"] == "obj" and t["head"] == xcomp_token["id"]),
+        None
+    )
+    inner_vp = Node("SV")
+    v_inf = Node("V", is_head=True, color=xcomp_color)
+    v_inf_word = Node(xcomp_token["form"], word=xcomp_token["form"],
+                      index=xcomp_index, is_head=True, color=xcomp_color)
+    v_inf.children = [v_inf_word]
+    if xcomp_obj:
+        obj_dp = build_dp(xcomp_obj, tokens)
+        inner_vp.children = [v_inf, obj_dp]
+    else:
+        inner_vp.children = [v_inf]
+
+    # PRO soggetto dell'infinito
+    pro_node = None
+    if silent_nodes and xcomp_token["id"] in silent_nodes:
+        _, pro_node, _ = silent_nodes[xcomp_token["id"]]
+
+    # Sv dell'infinito: se c'è PRO → Sv → PRO + v'(V+t) + SV
+    # Per semplicità: ST_inf ridotto → PRO + T'(T[Inf] + SV)
+    if pro_node:
+        t_inf = Node("T", is_head=True, color=xcomp_color)
+        t_inf_word = Node("[Inf]", word="[Inf]", is_head=True, color=xcomp_color)
+        t_inf.children = [t_inf_word]
+        t_prime_inf = Node("T'")
+        t_prime_inf.children = [t_inf, inner_vp]
+        st_inf = Node("ST")
+        st_inf.children = [pro_node, t_prime_inf]
+        return st_inf
+    else:
+        return inner_vp
+
 # ── Costruzione ST (punto di ingresso) ───────────────────────────────────────
 
-def build_tp(tokens):
+def build_tp(tokens, tipo_verbo=None):
     root = next((t for t in tokens if t["deprel"] == "root"), None)
     if not root:
         raise ValueError("Nessun token root trovato")
+
+    # Correzione tipo_verbo PRIMA di enrich (così pro viene aggiunto correttamente)
+    if tipo_verbo == "transitivo":
+        for t in tokens:
+            if (t["deprel"] == "nsubj" and t["head"] == root["id"]
+                    and t["id"] > root["id"]):
+                t["deprel"] = "obj"
+                break
 
     # Arricchimento con pro/PRO
     tokens, silent_nodes = enrich_with_silent_subjects(tokens)
@@ -627,8 +711,14 @@ def build_tp(tokens):
     # Rilevamento clitici anticipato (serve per is_unaccusative)
     _clitics_pre = get_clitic_tokens(tokens, root["id"])
     _has_refl_pre = any(typ == "refl" for typ, _ in _clitics_pre)
-    # Se c'è riflessivo, non è inaccusativo (è transitivo con clitico)
-    unaccusative = is_unaccusative(tokens) and not _has_refl_pre
+    _unacc_auto = is_unaccusative(tokens) and not _has_refl_pre
+
+    if tipo_verbo == "transitivo":
+        unaccusative = False
+    elif tipo_verbo == "inaccusativo":
+        unaccusative = True
+    else:
+        unaccusative = _unacc_auto
 
     subj_token = next(
         (t for t in tokens
@@ -656,6 +746,20 @@ def build_tp(tokens):
     )
     has_clitic_obj  = (cl_acc  is not None)
     has_clitic_refl = (cl_refl is not None)
+
+    # Rilevamento xcomp (infinito controllato)
+    xcomp_token = next(
+        (t for t in tokens
+         if t["deprel"] == "xcomp" and t["head"] == root["id"]
+         and _verbform(t) == "Inf"),
+        None
+    )
+    xcomp_node = None
+    if xcomp_token:
+        xcomp_node = build_xcomp_vp(
+            xcomp_token["id"], xcomp_token, tokens,
+            silent_nodes=silent_nodes
+        )
     agent_token = next(
         (t for t in tokens
          if t["deprel"] == "obl:agent" and t["head"] == root["id"]),
@@ -823,22 +927,23 @@ def build_tp(tokens):
         v_color = color_for(verb_index)
         subj_color = color_for(subj_index)
 
+        # V contiene la traccia del verbo (sale a T)
         v_node = Node("V", is_head=True, color=v_color)
-        v_word = Node(root["form"], word=root["form"],
-                      index=verb_index, is_head=True, color=v_color)
-        v_node.children = [v_word]
+        t_verb = Node("t", word="t", index=verb_index, is_trace=True,
+                      is_head=True, color=v_color)
+        v_node.children = [t_verb]
 
-        t_subj_inner = Node("SD", index=subj_index, is_trace=True,
-                            color=subj_color)
-        t_word = Node("t", word="t", index=subj_index, is_trace=True,
-                      is_head=True, color=subj_color)
-        t_subj_inner.children = [t_word]
+        # traccia del soggetto in posizione interna (nasce come oggetto)
+        t_subj_inner = Node("t", word="t", index=subj_index, is_trace=True,
+                            is_head=True, color=subj_color)
 
         vp = Node("SV")
         vp.children = [v_node, t_subj_inner]
 
-        t_node = Node("T", is_head=True)
-        t_node.children = [Node(root["form"], word=root["form"], is_head=True)]
+        # T riceve la forma fonetica del verbo
+        t_node = Node("T", is_head=True, color=v_color)
+        t_node.children = [Node(root["form"], word=root["form"],
+                                index=verb_index, is_head=True, color=v_color)]
         main_complement = vp
 
     elif aux_t:
@@ -862,6 +967,7 @@ def build_tp(tokens):
             cl_acc=cl_acc, cl_refl=cl_refl,
             cl_index=cl_index, has_clitic_obj=has_clitic_obj,
             has_clitic_refl=has_clitic_refl,
+            xcomp_node=xcomp_node,
         )
         t_node = Node("T", is_head=True)
         t_node.children = [Node(aux_t["form"], word=aux_t["form"], is_head=True)]
@@ -885,6 +991,7 @@ def build_tp(tokens):
             cl_acc=cl_acc, cl_refl=cl_refl,
             cl_index=cl_index, has_clitic_obj=has_clitic_obj,
             has_clitic_refl=has_clitic_refl,
+            xcomp_node=xcomp_node,
         )
         t_node = Node("T", is_head=True, color=color_for(verb_index))
         t_node.children = [Node(root["form"], word=root["form"],
