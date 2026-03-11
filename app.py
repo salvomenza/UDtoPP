@@ -411,6 +411,13 @@ HTML = """
       text-align: center;
     }
 
+    .descrizione {
+      font-size: 0.88em;
+      color: #5a4a3a;
+      margin-bottom: 14px;
+      line-height: 1.6;
+    }
+
     footer {
       text-align: center;
       padding: 30px;
@@ -434,6 +441,7 @@ HTML = """
 
 <main>
   <div class="input-section">
+    <p class="descrizione">Inserisci una frase: UDPipe la analizza secondo Universal Dependencies, poi lo strumento converte l'analisi in una rappresentazione di tipo generativista.</p>
     <label for="frase">Frase da analizzare:</label>
     <div class="input-row">
       <input type="text" id="frase" placeholder="Es. I pirati affondano la nave"
@@ -451,11 +459,41 @@ HTML = """
     <div id="status"></div>
   </div>
 
+  <!-- Dialogo transitivo/inaccusativo -->
+  <div id="modal-tipo" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+       background:rgba(0,0,0,0.45); z-index:1000; align-items:center; justify-content:center;">
+    <div style="background:#fff8f0; border-radius:8px; padding:28px 32px; max-width:420px;
+                box-shadow:0 4px 24px rgba(0,0,0,0.18); font-family:Georgia,serif;">
+      <p style="margin:0 0 10px; font-size:1em; color:#2c1e0f; line-height:1.6;">
+        Il verbo <strong id="modal-verbo"></strong> non ha un soggetto esplicito preverbale,
+        e <strong id="modal-sd"></strong> è in posizione postverbale.
+      </p>
+      <p style="margin:0 0 20px; font-size:0.92em; color:#5a4a3a;">
+        Come vuoi analizzare la frase?
+      </p>
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <button onclick="scegliTipo('transitivo')"
+          style="flex:1; padding:10px; background:#7a5a3a; color:#fff; border:none;
+                 border-radius:5px; cursor:pointer; font-size:0.95em;">
+          Transitivo<br><small style="font-weight:normal; opacity:0.85;">pro + oggetto diretto</small>
+        </button>
+        <button onclick="scegliTipo('inaccusativo')"
+          style="flex:1; padding:10px; background:#3a5a7a; color:#fff; border:none;
+                 border-radius:5px; cursor:pointer; font-size:0.95em;">
+          Inaccusativo<br><small style="font-weight:normal; opacity:0.85;">soggetto interno</small>
+        </button>
+      </div>
+      <p style="margin:16px 0 0; font-size:0.8em; color:#a89880; text-align:center;">
+        La scelta modifica la struttura generata.
+      </p>
+    </div>
+  </div>
+
   <div class="tree-section" id="tree-section">
     <h2 id="tree-title"></h2>
     <div class="tab-row">
-      <button class="tab-btn active" id="tab-chomsky" onclick="switchTab('chomsky')">Albero chomskiano</button>
-      <button class="tab-btn" id="tab-ud" onclick="switchTab('ud')">Albero UD</button>
+      <button class="tab-btn active" id="tab-chomsky" onclick="switchTab('chomsky')">Generative</button>
+      <button class="tab-btn" id="tab-ud" onclick="switchTab('ud')">UDPipe</button>
     </div>
     <div class="tab-pane active" id="pane-chomsky">
       <div id="svg-container"></div>
@@ -497,7 +535,7 @@ HTML = """
 </main>
 
 <footer>
-  Strutture chomskiane · X-barra · DP · little v · TP
+  
 </footer>
 
 <script>
@@ -530,7 +568,9 @@ HTML = """
     el.className = error ? "error" : "";
   }
 
-  async function genera() {
+  let _pendingConllu = null;
+
+  async function genera(tipoVerbo) {
     const frase = document.getElementById("frase").value.trim();
     if (!frase) return;
     currentFrase = frase;
@@ -538,10 +578,14 @@ HTML = """
     document.getElementById("tree-section").style.display = "none";
 
     try {
+      const payload = {frase: frase};
+      if (tipoVerbo) payload.tipo_verbo = tipoVerbo;
+      if (_pendingConllu) payload.conllu = _pendingConllu;
+
       const resp = await fetch("/analizza", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({frase: frase})
+        body: JSON.stringify(payload)
       });
       const data = await resp.json();
 
@@ -550,6 +594,18 @@ HTML = """
         return;
       }
 
+      // Il server chiede di disambiguare transitivo/inaccusativo
+      if (data.chiedi_tipo) {
+        _pendingConllu = data.conllu;
+        setStatus("");
+        document.getElementById("modal-verbo").textContent = data.verbo;
+        document.getElementById("modal-sd").textContent = data.sd;
+        const modal = document.getElementById("modal-tipo");
+        modal.style.display = "flex";
+        return;
+      }
+
+      _pendingConllu = null;
       setStatus("");
       currentSVG = data.svg;
       currentUDSVG = data.ud_svg || "";
@@ -564,6 +620,11 @@ HTML = """
     } catch(e) {
       setStatus("Errore di connessione: " + e.message, true);
     }
+  }
+
+  function scegliTipo(tipo) {
+    document.getElementById("modal-tipo").style.display = "none";
+    genera(tipo);
   }
 
   function toggleConllu() {
@@ -717,6 +778,53 @@ def build_ud_svg(tokens):
     return "\n".join(out)
 
 
+def detect_transitivo_inaccusativo(tokens):
+    """
+    Rileva ambiguità transitivo/inaccusativo.
+    Restituisce {"verbo": ..., "sd": ...} se ambiguo, None altrimenti.
+    Il caso ambiguo: verbo finito senza nsubj preverbale, con un SD
+    postverbale che UDPipe ha marcato come nsubj, e lemma NON nella
+    lista inaccusativi certi.
+    """
+    from ud_to_chomsky import VERBI_INACCUSATIVI, _mood, _get_feats
+    root = next((t for t in tokens if t["deprel"] == "root"), None)
+    if not root:
+        return None
+    # Solo verbi finiti
+    feats = _get_feats(root)
+    mood = next((f.split("=")[1] for f in feats.split("|")
+                 if f.startswith("Mood=")), None)
+    aux_mood = next(
+        (next((f.split("=")[1] for f in _get_feats(t).split("|")
+               if f.startswith("Mood=")), None)
+         for t in tokens
+         if t["upos"] == "AUX" and t["head"] == root["id"]),
+        None
+    )
+    if mood not in ("Ind","Sub","Cnd","Imp") and aux_mood not in ("Ind","Sub","Cnd","Imp"):
+        return None
+    # Cerca nsubj postverbale
+    nsubj = next(
+        (t for t in tokens
+         if t["deprel"] == "nsubj" and t["head"] == root["id"]
+         and t["id"] > root["id"]),
+        None
+    )
+    if not nsubj:
+        return None
+    # Se il lemma è nella lista inaccusativi certi, non è ambiguo
+    if root["lemma"] in VERBI_INACCUSATIVI:
+        return None
+    # Nessun soggetto preverbale
+    has_pre_nsubj = any(
+        t["deprel"] == "nsubj" and t["head"] == root["id"] and t["id"] < root["id"]
+        for t in tokens
+    )
+    if has_pre_nsubj:
+        return None
+    return {"verbo": root["form"], "sd": nsubj["form"]}
+
+
 # ── API endpoints ────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -728,29 +836,46 @@ def index():
 def analizza():
     data = request.get_json()
     frase = data.get("frase", "").strip()
+    tipo_verbo = data.get("tipo_verbo", None)   # "transitivo" | "inaccusativo" | None
+    conllu_pre = data.get("conllu", None)        # CoNLL-U già calcolato (secondo round)
     if not frase:
         return jsonify({"error": "Frase vuota"})
 
-    # Chiama UDPipe
-    try:
-        resp = requests.post(UDPIPE_URL, data={
-            "data": frase,
-            "model": UDPIPE_MODEL,
-            "tokenizer": "",
-            "tagger": "",
-            "parser": "",
-        }, timeout=10)
-        result = resp.json()
-        conllu = result.get("result", "")
-        if not conllu:
-            return jsonify({"error": "UDPipe non ha restituito risultati"})
-    except Exception as e:
-        return jsonify({"error": f"Errore UDPipe: {str(e)}"})
+    # Usa il CoNLL-U pre-calcolato oppure chiama UDPipe
+    if conllu_pre:
+        conllu = conllu_pre
+    else:
+        try:
+            resp = requests.post(UDPIPE_URL, data={
+                "data": frase,
+                "model": UDPIPE_MODEL,
+                "tokenizer": "",
+                "tagger": "",
+                "parser": "",
+            }, timeout=10)
+            result = resp.json()
+            conllu = result.get("result", "")
+            if not conllu:
+                return jsonify({"error": "UDPipe non ha restituito risultati"})
+        except Exception as e:
+            return jsonify({"error": f"Errore UDPipe: {str(e)}"})
 
     # Converti e renderizza
     try:
         tokens = parse_conllu(conllu)
-        tree = build_tp(tokens)
+
+        # Rilevamento ambiguità transitivo/inaccusativo
+        if tipo_verbo is None:
+            ambiguity = detect_transitivo_inaccusativo(tokens)
+            if ambiguity:
+                return jsonify({
+                    "chiedi_tipo": True,
+                    "conllu": conllu,
+                    "verbo": ambiguity["verbo"],
+                    "sd": ambiguity["sd"],
+                })
+
+        tree = build_tp(tokens, tipo_verbo=tipo_verbo)
         svg = tree_to_svg(tree, title=frase)
         ud_svg = build_ud_svg(tokens)
         return jsonify({"svg": svg, "conllu": conllu, "ud_svg": ud_svg})
