@@ -119,10 +119,35 @@ def preliminary_comment(tokens):
         )
 
     # transitivo (semplice o ditransitivo o con wh)
-    lemma_str = root["lemma"]
-    # forma femminile del clitico: usa "la"
-    clitico = f"'la {lemma_str}'" if not lemma_str.endswith("e") else f"'la {lemma_str}'"
-    clitico_ex = f"'la {lemma_str.rstrip('e')}o'" if lemma_str.endswith("ere") else f"'la {lemma_str}'"
+    # Forma del test clitico: se c'è ausiliare uso "la hanno accettata",
+    # altrimenti uso il presente "la accetta"
+    aux_avere = next((t for t in tokens
+                      if t["lemma"] == "avere" and t["upos"] == "AUX"), None)
+    if aux_avere:
+        # participio dal lemma
+        lemma_str = root["lemma"]
+        if lemma_str.endswith("are"):
+            part_f = lemma_str[:-3] + "ata"
+        elif lemma_str.endswith("ere"):
+            part_f = lemma_str[:-3] + "uta"
+        elif lemma_str.endswith("ire"):
+            part_f = lemma_str[:-3] + "ita"
+        else:
+            part_f = root["form"]
+        clitico_ex = f"'la {aux_avere['form']} {part_f}'"
+    else:
+        # presente 3a persona: uso la forma attuale del verbo se sembra al presente
+        # altrimenti ricado sul lemma con -a finale
+        lemma_str = root["lemma"]
+        if lemma_str.endswith("are"):
+            pres = lemma_str[:-3] + "a"
+        elif lemma_str.endswith("ere"):
+            pres = lemma_str[:-3] + "e"
+        elif lemma_str.endswith("ire"):
+            pres = lemma_str[:-3] + "e"
+        else:
+            pres = root["form"]
+        clitico_ex = f"'la {pres}'"
 
     ditrans = has_obj and has_iobj and not has_wh
     wh_trans = has_wh and has_obj
@@ -131,7 +156,7 @@ def preliminary_comment(tokens):
         return (
             f"<b>Test preliminare.</b> Il predicato {verb} è transitivo ditransitivo "
             f"con elemento wh. Seleziona 'avere' e ammette il clitico accusativo 'la' "
-            f"(es. 'la {root['form']}'). "
+            f"(es. {clitico_ex}). "
             f"Attenzione: non usare 'lo' come test, perché 'lo' funziona anche "
             f"come proforma per predicati nominali ('è medico → lo è'). "
             f"La struttura interna è larsoneana (due SV annidati). "
@@ -142,7 +167,7 @@ def preliminary_comment(tokens):
         return (
             f"<b>Test preliminare.</b> Il predicato {verb} è ditransitivo. "
             f"Seleziona 'avere' e ammette il clitico accusativo 'la' "
-            f"(es. 'la {root['form']}'). "
+            f"(es. {clitico_ex}). "
             f"Attenzione: non usare 'lo' come test, perché 'lo' funziona anche "
             f"come proforma per predicati nominali ('è medico → lo è'). "
             f"Essendo ditransitivo, la struttura interna è <b>larsoneana</b>: "
@@ -154,7 +179,7 @@ def preliminary_comment(tokens):
         return (
             f"<b>Test preliminare.</b> Il predicato {verb} è transitivo. "
             f"Seleziona 'avere' e ammette il clitico accusativo 'la' "
-            f"(es. 'la {root['form']}'). "
+            f"(es. {clitico_ex}). "
             f"Attenzione: non usare 'lo' come test, perché 'lo' funziona anche "
             f"come proforma per predicati nominali ('è medico → lo è'). "
             f"Avremo bisogno di SV (dove V assegna il ruolo tematico interno) "
@@ -544,7 +569,17 @@ def generate_steps(tokens):
     larsonian = (wh_obl is not None and wh_case_token is not None
                  and obj_token is not None)
 
-    # Passo 1: SD oggetto (se presente)
+    # Passo 1: SD soggetto
+    if subj_dp:
+        steps.append(make_step(
+            f"Merge: SD soggetto",
+            f"Costruiamo SD({subj_str}). "
+            f"Questo elemento sarà l'argomento esterno e riceverà "
+            f"il ruolo tematico di <b>agente</b> da v.",
+            deepcopy(subj_dp)
+        ))
+
+    # Passo 2: SD oggetto (se presente)
     if obj_token:
         obj_dp = build_dp(obj_token, tokens)
         steps.append(make_step(
@@ -555,41 +590,46 @@ def generate_steps(tokens):
             obj_dp
         ))
 
-    # Passo 2: SV interno
+    # Passo 3: SV
     v_node = Node("V", is_head=True, color=v_color)
     v_word_node = Node(verb_form, word=verb_form, index=verb_index,
                        is_head=True, color=v_color)
     v_node.children = [v_word_node]
 
     if larsonian:
-        # SV interno: V + SP(t_k)
+        # SV interno: V + t_k
         wh_trace = Node("t", word="t", index=wh_index, is_trace=True,
                         is_head=True, color=wh_color)
         sv_inner = Node("SV")
         sv_inner.children = [v_node, wh_trace]
         steps.append(make_step(
-            "Merge esterno: V + SP(t_k) → SV interno",
-            f"V('{verb_form}') si unisce alla traccia del costituente wh "
-            f"(posizione argomento indiretto). "
-            f"V assegna il ruolo tematico di <b>meta/beneficiario</b> "
-            f"all'argomento indiretto.",
+            "Merge esterno: V + t_k → SV interno",
+            f"V('{verb_form}') si unisce alla traccia t_k del costituente wh "
+            f"(posizione dell'argomento indiretto). "
+            f"V assegna il ruolo tematico di <b>meta/beneficiario</b>.",
             sv_inner
         ))
-
-        # SV esterno: obj in spec
+        # V' esterno (testa con traccia + SV interno)
         v_inner2 = Node("V", is_head=True, color=v_color)
         t_v2 = Node("t", word="t", index=verb_index, is_trace=True,
                     is_head=True, color=v_color)
         v_inner2.children = [t_v2]
         v_prime_out = Node("V'")
         v_prime_out.children = [v_inner2, sv_inner]
+        steps.append(make_step(
+            "Proiezione: V' esterno",
+            f"V' si forma unendo la testa V (con traccia t_i) e il SV interno. "
+            f"V' è la proiezione intermedia che domina i due SV annidati.",
+            v_prime_out
+        ))
+        # SV esterno con spec
         obj_dp2 = build_dp(obj_token, tokens)
         sv_outer = Node("SV")
         sv_outer.children = [obj_dp2, v_prime_out]
         steps.append(make_step(
             "Merge esterno: SD(obj) in spec-SV → SV larsoneano",
-            f"Struttura larsoneana: SD({obj_str}) occupa spec-SV esterno. "
-            f"SD({obj_str}) c-comanda l'argomento indiretto (wh) nel SV interno. "
+            f"SD({obj_str}) entra in spec-SV esterno tramite Merge esterno. "
+            f"SD({obj_str}) c-comanda l'argomento indiretto nel SV interno. "
             f"V assegna il ruolo di <b>tema</b> a SD({obj_str}).",
             sv_outer
         ))
@@ -597,23 +637,14 @@ def generate_steps(tokens):
 
     elif obj_token:
         sv = Node("SV")
-        t_v = Node("t", word="t", index=verb_index, is_trace=True,
-                   is_head=True, color=v_color)
-        v_trace = Node("V", is_head=True, color=v_color)
-        v_trace.children = [t_v]
-        obj_dp2 = build_dp(obj_token, tokens)
-        sv.children = [v_trace, obj_dp2]
-
-        # In realtà al primo passo V ha la forma fonetica
-        sv2 = Node("SV")
-        sv2.children = [v_node, build_dp(obj_token, tokens)]
+        sv.children = [v_node, build_dp(obj_token, tokens)]
         steps.append(make_step(
             f"Merge esterno: V + SD → SV",
             f"V('{verb_form}') si unisce a SD({obj_str}). "
             f"V assegna il ruolo tematico di <b>tema/paziente</b> a SD({obj_str}).",
-            sv2
+            sv
         ))
-        sv_for_shell = sv2
+        sv_for_shell = sv
     else:
         sv = Node("SV")
         sv.children = [v_node]
@@ -624,7 +655,7 @@ def generate_steps(tokens):
         ))
         sv_for_shell = sv
 
-    # Passo 3: V sale a v → Sv
+    # Passo: V sale a v — prima mostriamo v' da solo
     v_little = Node("v", is_head=True, color=v_color)
     if aux_t:
         v_word2 = Node(verb_form, word=verb_form, index=verb_index,
@@ -634,40 +665,46 @@ def generate_steps(tokens):
                        is_head=True, color=v_color)
     v_little.children = [v_word2]
 
-    # aggiorna SV interno con traccia
-    sv_inner_trace = Node("SV")
+    # SV con traccia di V
+    sv_with_v_trace = Node("SV")
     if obj_token and not larsonian:
         v_t = Node("V", is_head=True, color=v_color)
         v_t.children = [Node("t", word="t", index=verb_index, is_trace=True,
                              is_head=True, color=v_color)]
-        sv_inner_trace.children = [v_t, build_dp(obj_token, tokens)]
+        sv_with_v_trace.children = [v_t, build_dp(obj_token, tokens)]
     elif larsonian:
-        sv_inner_trace = sv_for_shell
+        sv_with_v_trace = sv_for_shell
     else:
         v_t = Node("V", is_head=True, color=v_color)
         v_t.children = [Node("t", word="t", index=verb_index, is_trace=True,
                              is_head=True, color=v_color)]
-        sv_inner_trace.children = [v_t]
+        sv_with_v_trace.children = [v_t]
 
+    # Prima mostriamo v' (proiezione intermedia, senza spec)
     v_prime = Node("v'")
-    v_prime.children = [v_little, sv_inner_trace]
+    v_prime.children = [v_little, sv_with_v_trace]
+    steps.append(make_step(
+        "Movimento di testa V → v: v'",
+        f"Il verbo sale da V a v (movimento di testa). "
+        f"Si forma prima la proiezione intermedia v', che unisce la testa v "
+        f"{'(con la forma fonetica del participio)' if aux_t else '(con la forma fonetica del verbo)'} "
+        f"e SV come complemento. La traccia t_i rimane in V. "
+        f"v porta il tratto agentivo [+ag]: potrà assegnare il ruolo di <b>agente</b> "
+        f"all'elemento che entrerà in spec-Sv.",
+        v_prime
+    ))
 
-    # Sv senza spec (solo v' per ora)
+    # Poi Sv senza spec
     sv_shell_no_spec = Node("Sv")
     sv_shell_no_spec.children = [v_prime]
-
     steps.append(make_step(
-        "Movimento di testa V → v: Sv",
-        f"Il verbo sale da V a v (movimento di testa). "
-        f"La testa v porta un tratto agentivo [+ag] che introduce "
-        f"la posizione spec-Sv per l'argomento esterno. "
-        f"v assegnerà il ruolo di <b>agente</b> all'elemento in spec-Sv. "
-        f"{'In v appare la forma fonetica del participio.' if aux_t else 'In v rimane la forma fonetica del verbo (salirà ancora a T).'} "
-        f"La traccia t_{verb_index} rimane in V.",
+        "Proiezione massimale: Sv (senza spec)",
+        f"v' proietta Sv. La posizione spec-Sv è ancora vuota — "
+        f"l'argomento esterno entrerà nel passo successivo.",
         sv_shell_no_spec
     ))
 
-    # Passo 4: soggetto entra in spec-Sv (SD vero, non traccia)
+    # Poi Sv con soggetto in spec
     sv_shell = Node("Sv")
     if subj_dp:
         sv_shell.children = [deepcopy(subj_dp), deepcopy(v_prime)]
@@ -681,7 +718,7 @@ def generate_steps(tokens):
     else:
         sv_shell.children = [deepcopy(v_prime)]
 
-    # Passo 5: aggiunti a vP
+    # Aggiunti a Sv
     current = sv_shell
     for obl_t in adj_obl_tokens:
         case_t2 = next((t for t in tokens
@@ -711,26 +748,38 @@ def generate_steps(tokens):
 
     sv_final = current
 
-    # Passo 6: T
+    # T' prima (proiezione intermedia), poi ST senza spec
     t_node = Node("T", is_head=True)
     if aux_t:
         t_w = Node(aux_t["form"], word=aux_t["form"], is_head=True)
-        t_comment = (f"L'ausiliare '{aux_t['form']}' occupa la testa T "
-                     f"e porta i tratti di tempo e accordo (uNum). "
-                     f"Il participio '{verb_form}' è già salito a v e si ferma lì.")
+        t_comment_prime = (f"Si forma T': la testa T('{aux_t['form']}') si unisce a Sv come complemento. "
+                           f"Il participio '{verb_form}' è già in v e non sale ulteriormente.")
+        t_comment_full  = (f"T' proietta ST. La posizione spec-ST è ancora vuota: "
+                           f"T porta uNum e attende un elemento con iNum.")
     else:
         t_w = Node(verb_form, word=verb_form, index=verb_index,
                    is_head=True, color=v_color)
-        t_comment = (f"Il verbo '{verb_form}' sale da v a T (movimento di testa V→v→T). "
-                     f"T porta i tratti di tempo e accordo (uNum).")
+        t_comment_prime = (f"Il verbo '{verb_form}' sale da v a T (V→v→T). "
+                           f"Si forma T': T si unisce a Sv come complemento.")
+        t_comment_full  = (f"T' proietta ST. La posizione spec-ST è ancora vuota: "
+                           f"T porta uNum e attende un elemento con iNum.")
     t_node.children = [t_w]
+
+    # Prima T' da sola
     t_prime = Node("T'")
     t_prime.children = [t_node, sv_final]
+    steps.append(make_step(
+        "Movimento di testa → T: T'",
+        t_comment_prime,
+        t_prime
+    ))
+
+    # Poi ST senza spec
     st_no_spec = Node("ST")
     st_no_spec.children = [t_prime]
     steps.append(make_step(
-        f"Movimento di testa → T: ST",
-        t_comment,
+        "Proiezione massimale: ST (senza spec)",
+        t_comment_full,
         st_no_spec
     ))
 
@@ -780,20 +829,25 @@ def generate_steps(tokens):
             wh_xp = build_dp(wh_noun_token, tokens, index=wh_index,
                              color=wh_color)
 
-        c_prime = Node("C'")
         c = Node("C", is_head=True)
         c_word = Node("[+wh]", word="[+wh]", is_head=True)
         c.children = [c_word]
+        c_prime = Node("C'")
         c_prime.children = [c, deepcopy(st_for_cp)]
-        sc = Node("SC")
-        sc.children = [wh_xp, c_prime]
+        steps.append(make_step(
+            "Proiezione: C'",
+            f"C[+wh] si unisce a ST come complemento e forma C'. "
+            f"La posizione spec-SC è ancora vuota.",
+            c_prime
+        ))
 
+        sc = Node("SC")
+        sc.children = [wh_xp, deepcopy(c_prime)]
         wh_str = wh_form(tokens)
         steps.append(make_step(
             f"Merge interno: {wh_str} → spec-SC",
             f"C porta il tratto [+wh] non interpretabile (u[wh]). "
-            f"Per valutarlo, {wh_str} viene copiato da spec-ST a spec-SC "
-            f"tramite Merge interno. "
+            f"Per valutarlo, {wh_str} viene copiato in spec-SC tramite Merge interno. "
             f"Da spec-SC {wh_str} c-comanda C e valuta u[wh]. "
             f"Come effetto collaterale la frase riceve interpretazione interrogativa. "
             f"Rimane una traccia t_{wh_index} nella posizione originaria.",
