@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-# ── Struttura dati ──────────────────────────────────────────────────────────
+# ── Struttura dati v. 8──────────────────────────────────────────────────────────
 
 @dataclass
 class Node:
@@ -701,6 +701,43 @@ def build_xcomp_vp(verb_token_id, xcomp_token, tokens,
     else:
         return inner_vp
 
+
+# ── Post-processing: elimina proiezioni intermedie con figlio unico ──────────
+
+# Proiezioni massimali che possono essere collassate se hanno un solo figlio
+# (nessun spec, nessun aggiunto — solo la testa)
+_COLLASSABILI = {"SN", "SA", "SAvv"}
+
+def prune_single_child_bars(node):
+    """
+    Post-order: elimina nodi ridondanti con figlio unico.
+    1. X' (proiezione intermedia) con un solo figlio → sostituita dal figlio
+    2. SN/SA/SAvv con un solo figlio che è la testa → sostituita dal figlio
+       (es. SN → N → parola  diventa  N → parola)
+    Non tocca SD, SP, SV, Sv, ST, SC, SAsp, FR.
+    """
+    # Ricorsione prima
+    node.children = [prune_single_child_bars(c) for c in node.children]
+
+    # Collassa figli ridondanti
+    final = []
+    for child in node.children:
+        # X' con un solo figlio
+        if (child.label.endswith("'") and
+                not child.label.endswith("''") and
+                len(child.children) == 1 and
+                child.word is None):
+            final.append(child.children[0])
+        # SN/SA/SAvv con un solo figlio (la testa lessicale)
+        elif (child.label in _COLLASSABILI and
+              len(child.children) == 1 and
+              child.word is None):
+            final.append(child.children[0])
+        else:
+            final.append(child)
+    node.children = final
+    return node
+
 # ── Costruzione ST (punto di ingresso) ───────────────────────────────────────
 
 def build_tp(tokens, tipo_verbo=None):
@@ -981,8 +1018,12 @@ def build_tp(tokens, tipo_verbo=None):
         main_complement = vp
 
     elif modal_aux:
-        # Struttura modale: T = modale, V = infinito
-        # Oggetto e complementi dipendono dall'infinito (root in UD)
+        # Struttura modale: T = modale, V = infinito con PRO soggetto
+        # PRO è controllato da pro_j / soggetto esplicito (stesso indice j)
+        pro_index = subj_index  # "j"
+        pro_color = color_for(pro_index)
+        pro_node = build_pro_node("PRO", index=pro_index, color=pro_color)
+
         eff_obj = None
         if has_clitic_obj:
             eff_obj = {"id": -1, "form": f"t_{cl_index}", "lemma": "t",
@@ -991,22 +1032,31 @@ def build_tp(tokens, tipo_verbo=None):
         elif obj_token:
             eff_obj = obj_token
 
-        vp_shell = build_vp_shell(
-            root, tokens, subj_token, eff_obj,
-            verb_index=verb_index, subj_index=subj_index,
-            wh_index=wh_index if wh_obl else None,
-            wh_case_token=wh_case_token,
-            wh_noun_token=wh_noun_token,
-            has_aux=True,   # infinito rimane in V, modale è in T
-            cl_acc=cl_acc, cl_refl=cl_refl,
-            cl_index=cl_index, has_clitic_obj=has_clitic_obj,
-            has_clitic_refl=has_clitic_refl,
-            xcomp_node=xcomp_node,
-        )
-        t_node = Node("T", is_head=True, color=color_for(verb_index))
+        # Costruiamo Sv con PRO come spec esplicito
+        # build_vp_shell mette la traccia t_j in spec-Sv — ma qui vogliamo
+        # PRO, non una traccia. Costruiamo Sv manualmente.
+        v_color = color_for(verb_index)
+
+        inner_vp = build_vp(root, tokens, verb_index=verb_index,
+                            obj_token=eff_obj, verb_is_trace=True)
+
+        v_little = Node("v", is_head=True, color=v_color)
+        v_word = Node(root["form"], word=root["form"],
+                      index=verb_index, is_head=True, color=v_color)
+        v_little.children = [v_word]
+
+        v_prime = Node("v'")
+        v_prime.children = [v_little, inner_vp]
+
+        sv_modal = Node("Sv")
+        sv_modal.children = [pro_node, v_prime]
+
+        # Aggiunti SP/Avv come sdoppiamento Sv attorno a sv_modal
+        main_complement = sv_modal
+
+        t_node = Node("T", is_head=True, color=v_color)
         t_node.children = [Node(modal_aux["form"], word=modal_aux["form"],
-                                is_head=True, color=color_for(verb_index))]
-        main_complement = vp_shell
+                                is_head=True, color=v_color)]
 
     elif aux_t:
         # Oggetto: se c'è clitico acc, usa traccia t_k; altrimenti obj_token
@@ -1087,9 +1137,9 @@ def build_tp(tokens, tipo_verbo=None):
     tp.children = [subj_dp, t_prime] if subj_dp else [t_prime]
 
     if wh_xp is not None:
-        return wrap_cp(tp, wh_xp)
+        return prune_single_child_bars(wrap_cp(tp, wh_xp))
 
-    return tp
+    return prune_single_child_bars(tp)
 
 
 # ── Pretty print per debug ───────────────────────────────────────────────────
