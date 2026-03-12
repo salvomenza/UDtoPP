@@ -17,7 +17,7 @@ from step_generator import generate_steps
 
 app = Flask(__name__)
 
-# ── Configurazione UDPipe ────────────────────────────────────────────────────
+# ── Configurazione UDPipe v. 8────────────────────────────────────────────────────
 
 UDPIPE_URL = "https://lindat.mff.cuni.cz/services/udpipe/api/process"
 UDPIPE_MODEL = "italian-isdt-ud-2.10-220711"
@@ -731,51 +731,104 @@ HTML = """
 
 
 def build_ud_svg(tokens):
-    """Genera un SVG dell'albero di dipendenza UD."""
+    """
+    Genera un SVG ad albero di dipendenza top-down dal CoNLL-U.
+    Root in alto, figli sotto, etichette deprel sugli archi.
+    """
     if not tokens:
         return ""
 
+    # ── Costruzione struttura ad albero ──────────────────────────────────────
+    children = {t["id"]: [] for t in tokens}
+    children[0] = []  # root virtuale
+    for t in tokens:
+        children[t["head"]].append(t["id"])
+
+    root_id = next(t["id"] for t in tokens if t["deprel"] == "root")
+    tok_by_id = {t["id"]: t for t in tokens}
+
+    # ── Layout: calcola x per ogni nodo con DFS ───────────────────────────────
     NODE_W = 90
-    TOP_MARGIN = 150
-    PAD = 20
+    NODE_H = 44
+    LEVEL_H = 80
+    PAD = 30
 
-    n = len(tokens)
-    width = max(600, n * NODE_W + PAD * 2)
-    height = TOP_MARGIN + 60 + 50
+    # Assegna posizioni x a ogni nodo in base ai figli (in-order)
+    x_pos = {}
+    leaf_counter = [0]
 
-    cx = [PAD + NODE_W // 2 + i * NODE_W for i in range(n)]
-    cy = TOP_MARGIN
+    def assign_x(nid):
+        kids = children.get(nid, [])
+        if not kids:
+            x_pos[nid] = leaf_counter[0] * NODE_W + NODE_W // 2 + PAD
+            leaf_counter[0] += 1
+        else:
+            for kid in kids:
+                assign_x(kid)
+            x_pos[nid] = (x_pos[kids[0]] + x_pos[kids[-1]]) / 2
+
+    assign_x(root_id)
+
+    # Calcola profondità di ogni nodo
+    depth = {}
+    def assign_depth(nid, d):
+        depth[nid] = d
+        for kid in children.get(nid, []):
+            assign_depth(kid, d + 1)
+    assign_depth(root_id, 0)
+
+    max_depth = max(depth.values()) if depth else 0
+    n_leaves = leaf_counter[0]
+    width  = max(500, n_leaves * NODE_W + PAD * 2)
+    height = (max_depth + 1) * LEVEL_H + NODE_H + PAD * 2 + 30
 
     out = []
-    out.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" style="font-family:Georgia,serif;background:#fdfaf5;">')
-    out.append('<defs><marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#7a5a3a"/></marker></defs>')
+    out.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" ')
+    out.append('style="font-family:Georgia,serif;background:#fdfaf5;" overflow="visible">')
+    out.append('<defs><marker id="udarr" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">')
+    out.append('<circle cx="3.5" cy="3.5" r="2.5" fill="#7a5a3a"/></marker></defs>')
 
-    # archi
-    for tok in tokens:
-        head = tok["head"]
-        if head == 0:
-            continue
-        si = tok["id"] - 1
-        di = head - 1
-        x1, x2 = cx[si], cx[di]
-        mid = (x1 + x2) / 2
-        dist = abs(x2 - x1)
-        ctrl_y = cy - 30 - dist * 0.35
-        ctrl_y = max(ctrl_y, 8)
-        dep = tok["deprel"]
-        out.append(f'<path d="M {x1} {cy} Q {mid} {ctrl_y} {x2} {cy}" fill="none" stroke="#7a5a3a" stroke-width="1.4" marker-end="url(#arr)"/>')
-        out.append(f'<text x="{mid}" y="{ctrl_y - 4}" text-anchor="middle" font-size="10" fill="#5a4a3a">{dep}</text>')
+    def nx(nid): return x_pos[nid]
+    def ny(nid): return PAD + depth[nid] * LEVEL_H + NODE_H // 2
 
-    # nodi
+    # ── Archi ────────────────────────────────────────────────────────────────
+    all_ids = list(depth.keys())
+    for nid in all_ids:
+        for kid in children.get(nid, []):
+            x1, y1 = nx(nid), ny(nid) + NODE_H // 2
+            x2, y2 = nx(kid), ny(kid) - NODE_H // 2
+            mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+            deprel = tok_by_id[kid]["deprel"]
+            out.append(f'<line x1="{x1:.1f}" y1="{y1}" x2="{x2:.1f}" y2="{y2}" ')
+            out.append(f'stroke="#b0956a" stroke-width="1.5" marker-end="url(#udarr)"/>')
+            out.append(f'<text x="{mx:.1f}" y="{my - 3}" text-anchor="middle" ')
+            out.append(f'font-size="10" fill="#7a5a3a" font-style="italic">{deprel}</text>')
+
+    # ── Nodi ────────────────────────────────────────────────────────────────
+    for nid in all_ids:
+        tok = tok_by_id[nid]
+        x, y = nx(nid), ny(nid)
+        is_root = (tok["deprel"] == "root")
+        fill   = "#e8f0e8" if is_root else "#f5f0e8"
+        stroke = "#6a9a6a" if is_root else "#c8b99a"
+        sw     = "2"       if is_root else "1.2"
+        out.append(f'<rect x="{x - NODE_W//2 + 5:.1f}" y="{y - NODE_H//2}" ')
+        out.append(f'width="{NODE_W - 10}" height="{NODE_H}" rx="5" ')
+        out.append(f'fill="{fill}" stroke="{stroke}" stroke-width="{sw}"/>')
+        out.append(f'<text x="{x:.1f}" y="{y + 5}" text-anchor="middle" ')
+        out.append(f'font-size="13" fill="#2c1e0f" font-weight="bold">{tok["form"]}</text>')
+        out.append(f'<text x="{x:.1f}" y="{y + 19}" text-anchor="middle" ')
+        out.append(f'font-size="10" fill="#7a5a3a" font-style="italic">{tok["upos"]}</text>')
+
+    # ── Parola lineare in basso ───────────────────────────────────────────────
+    base_y = height - 20
     for i, tok in enumerate(tokens):
-        x = cx[i]
-        out.append(f'<rect x="{x-38}" y="{cy}" width="76" height="46" rx="5" fill="#f5f0e8" stroke="#c8b99a" stroke-width="1.2"/>')
-        out.append(f'<text x="{x}" y="{cy + 18}" text-anchor="middle" font-size="13" fill="#2c1e0f">{tok["form"]}</text>')
-        out.append(f'<text x="{x}" y="{cy + 33}" text-anchor="middle" font-size="10" fill="#7a5a3a" font-style="italic">{tok["upos"]}</text>')
-        out.append(f'<text x="{x}" y="{cy + 56}" text-anchor="middle" font-size="9" fill="#a89880">{tok["id"]}</text>')
+        x = PAD + i * NODE_W + NODE_W // 2
+        out.append(f'<text x="{x}" y="{base_y}" text-anchor="middle" ')
+        out.append(f'font-size="11" fill="#a89880">{tok["form"]}</text>')
 
     out.append("</svg>")
-    return "\n".join(out)
+    return "".join(out)
 
 
 def detect_transitivo_inaccusativo(tokens):
