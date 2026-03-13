@@ -1,7 +1,7 @@
-# ver. 15
+# ver. 16
 """
 app.py
-Interfaccia web Flask per il generatore di alberi chomskiani
+Interfaccia web Flask per il generatore di alberi chomskiani.
 """
 
 from flask import Flask, request, jsonify, render_template_string
@@ -9,8 +9,9 @@ import requests
 import json
 from datetime import datetime
 
-VERSION = "0.15"
+VERSION = "0.16"
 BUILD_DATE = datetime.now().strftime("%d/%m/%Y")
+BUILD_TIME = datetime.now().strftime("%H:%M")
 from test_conllu import parse_conllu
 from ud_to_chomsky import build_tp
 from svg_render import tree_to_svg
@@ -437,7 +438,7 @@ HTML = """
   </div>
   <p>Fatto da Claude con la consulenza e l'insistenza di S. Menza, DiSUm, UniCT &middot;
      <a href="mailto:salvatore.menza@unict.it">salvatore.menza@unict.it</a></p>
-  <div class="version">v{{ version }} &middot; aggiornato il {{ build_date }}</div>
+  <div class="version">v{{ version }} &middot; aggiornato il {{ build_date }} alle {{ build_time }}</div>
 </header>
 
 <main>
@@ -569,7 +570,9 @@ HTML = """
     const frase = document.getElementById("frase").value.trim();
     if (!frase) return;
     currentFrase = frase;
-    if (!tipoVerbo) currentTipoVerbo = null;
+    currentTipoVerbo = tipoVerbo || null;
+    steps = [];
+    currentStep = 0;
     setStatus("Analisi in corso...");
     document.getElementById("tree-section").style.display = "none";
 
@@ -879,7 +882,7 @@ def detect_transitivo_inaccusativo(tokens):
 
 @app.route("/")
 def index():
-    return render_template_string(HTML, version=VERSION, build_date=BUILD_DATE)
+    return render_template_string(HTML, version=VERSION, build_date=BUILD_DATE, build_time=BUILD_TIME)
 
 
 @app.route("/analizza", methods=["POST"])
