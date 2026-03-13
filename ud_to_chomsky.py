@@ -1,7 +1,7 @@
 # ver. 15
 """
 ud_to_chomsky.py
-Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
+Converte una lista di token CoNLL-U in una struttura ad albero chomskiana
 
 Convenzioni:
 - SD invece di NP; little v (Sv); ST invece di IP
