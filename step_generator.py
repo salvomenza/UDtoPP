@@ -1,3 +1,4 @@
+# ver. 13
 """
 step_generator.py
 Genera la sequenza di passi per la costruzione passo-passo dell'albero chomskiano.
@@ -66,7 +67,7 @@ def wh_form(tokens):
 
 # ── Test preliminare ─────────────────────────────────────────────────────────
 
-def preliminary_comment(tokens):
+def preliminary_comment(tokens, tipo_verbo=None):
     """Genera il commento del test preliminare sul tipo di predicato."""
     root = next((t for t in tokens if t["deprel"] == "root"), None)
     if not root: return ""
@@ -76,6 +77,12 @@ def preliminary_comment(tokens):
     passive = is_passive(tokens)
     unaccusative = is_unaccusative(tokens)
     copular = is_copular(tokens)
+
+    # Sovrascrittura da scelta utente
+    if tipo_verbo == "transitivo":
+        unaccusative = False
+    elif tipo_verbo == "inaccusativo":
+        unaccusative = True
 
     has_obj = any(t["deprel"] == "obj" and t["head"] == root["id"] for t in tokens)
     has_wh = any(t["deprel"] == "obl" and is_wh_token(t) for t in tokens)
@@ -199,7 +206,7 @@ def make_step(title, comment, tree):
     return {"title": title, "comment": comment, "tree": deepcopy(tree)}
 
 
-def generate_steps(tokens):
+def generate_steps(tokens, tipo_verbo=None):
     """
     Genera la lista di passi per la costruzione dell'albero.
     Restituisce lista di dict: {title, comment, tree}
@@ -211,6 +218,12 @@ def generate_steps(tokens):
     passive   = is_passive(tokens)
     unaccus   = is_unaccusative(tokens)
     copular   = is_copular(tokens)
+
+    # Sovrascrittura da scelta utente
+    if tipo_verbo == "transitivo":
+        unaccus = False
+    elif tipo_verbo == "inaccusativo":
+        unaccus = True
 
     verb_index = "i"
     subj_index = "j"
@@ -269,7 +282,7 @@ def generate_steps(tokens):
     root_placeholder = Node("?", word="…")
     steps.append(make_step(
         "Test preliminare",
-        preliminary_comment(tokens),
+        preliminary_comment(tokens, tipo_verbo=tipo_verbo),
         root_placeholder
     ))
 
