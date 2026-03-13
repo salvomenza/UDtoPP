@@ -1,4 +1,4 @@
-# ver. 14
+# ver. 15
 """
 app.py
 Interfaccia web Flask per il generatore di alberi chomskiani.
@@ -9,7 +9,7 @@ import requests
 import json
 from datetime import datetime
 
-VERSION = "0.14"
+VERSION = "0.15"
 BUILD_DATE = datetime.now().strftime("%d/%m/%Y")
 from test_conllu import parse_conllu
 from ud_to_chomsky import build_tp
@@ -32,7 +32,7 @@ HTML = """
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Analizzatore sintattico · UniCT</title>
+  <title>Analizzatore sintattico · UniCT · v{{ version }}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
