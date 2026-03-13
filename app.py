@@ -1,4 +1,4 @@
-# ver. 13
+# ver. 14
 """
 app.py
 Interfaccia web Flask per il generatore di alberi chomskiani.
@@ -9,7 +9,7 @@ import requests
 import json
 from datetime import datetime
 
-VERSION = "0.13"
+VERSION = "0.14"
 BUILD_DATE = datetime.now().strftime("%d/%m/%Y")
 from test_conllu import parse_conllu
 from ud_to_chomsky import build_tp
