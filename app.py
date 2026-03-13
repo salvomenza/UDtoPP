@@ -17,7 +17,7 @@ from step_generator import generate_steps
 
 app = Flask(__name__)
 
-# ── Configurazione UDPipe v. 8────────────────────────────────────────────────────
+# ── Configurazione UDPipe ────────────────────────────────────────────────────
 
 UDPIPE_URL = "https://lindat.mff.cuni.cz/services/udpipe/api/process"
 UDPIPE_MODEL = "italian-isdt-ud-2.10-220711"
@@ -464,28 +464,21 @@ HTML = """
        background:rgba(0,0,0,0.45); z-index:1000; align-items:center; justify-content:center;">
     <div style="background:#fff8f0; border-radius:8px; padding:28px 32px; max-width:420px;
                 box-shadow:0 4px 24px rgba(0,0,0,0.18); font-family:Georgia,serif;">
-      <p style="margin:0 0 10px; font-size:1em; color:#2c1e0f; line-height:1.6;">
-        Il verbo <strong id="modal-verbo"></strong> non ha un soggetto esplicito preverbale,
-        e <strong id="modal-sd"></strong> è in posizione postverbale.
-      </p>
-      <p style="margin:0 0 20px; font-size:0.92em; color:#5a4a3a;">
-        Come vuoi analizzare la frase?
+      <p style="margin:0 0 20px; font-size:1.05em; color:#2c1e0f; line-height:1.6;">
+        Il verbo <strong id="modal-verbo"></strong> è transitivo?
       </p>
       <div style="display:flex; gap:12px; flex-wrap:wrap;">
         <button onclick="scegliTipo('transitivo')"
-          style="flex:1; padding:10px; background:#7a5a3a; color:#fff; border:none;
-                 border-radius:5px; cursor:pointer; font-size:0.95em;">
-          Transitivo<br><small style="font-weight:normal; opacity:0.85;">pro + oggetto diretto</small>
+          style="flex:1; padding:12px; background:#7a5a3a; color:#fff; border:none;
+                 border-radius:5px; cursor:pointer; font-size:1em;">
+          Sì
         </button>
         <button onclick="scegliTipo('inaccusativo')"
-          style="flex:1; padding:10px; background:#3a5a7a; color:#fff; border:none;
-                 border-radius:5px; cursor:pointer; font-size:0.95em;">
-          Inaccusativo<br><small style="font-weight:normal; opacity:0.85;">soggetto interno</small>
+          style="flex:1; padding:12px; background:#3a5a7a; color:#fff; border:none;
+                 border-radius:5px; cursor:pointer; font-size:1em;">
+          No
         </button>
       </div>
-      <p style="margin:16px 0 0; font-size:0.8em; color:#a89880; text-align:center;">
-        La scelta modifica la struttura generata.
-      </p>
     </div>
   </div>
 
