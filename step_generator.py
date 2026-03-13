@@ -1,4 +1,4 @@
-# ver. 16
+# ver. 17
 """
 step_generator.py
 Genera la sequenza di passi per la costruzione passo-passo dell'albero chomskiano.
@@ -12,7 +12,8 @@ from copy import deepcopy
 from ud_to_chomsky import (
     Node, build_dp, build_pp, build_advp, build_sc,
     is_passive, is_unaccusative, is_copular, is_wh_token,
-    color_for, children_of, build_pro_node, prune_single_child_bars
+    color_for, children_of, build_pro_node, prune_single_child_bars,
+    VERBI_MODALI
 )
 
 
@@ -227,6 +228,20 @@ def generate_steps(tokens, tipo_verbo=None):
         unaccus = False
     elif tipo_verbo == "inaccusativo":
         unaccus = True
+
+    # Modale: passo-passo non ancora disponibile
+    modal_aux = next((t for t in tokens
+                      if t["upos"] in ("AUX", "VERB")
+                      and t["lemma"] in VERBI_MODALI), None)
+    if modal_aux:
+        placeholder = Node("?", word="…")
+        return [make_step(
+            "Struttura modale",
+            f"<b>Nota.</b> La modalità passo-passo per le frasi con verbo modale "
+            f"(<i>{modal_aux['form']}</i>) non è ancora disponibile. "
+            f"Puoi consultare la rappresentazione completa nel tab Generative.",
+            placeholder
+        )]
 
     verb_index = "i"
     subj_index = "j"
@@ -761,6 +776,24 @@ def generate_steps(tokens, tipo_verbo=None):
     sv_final = current
 
     # T' prima (proiezione intermedia), poi ST senza spec
+    # Quando il verbo sale a T, v° deve mostrare la traccia (il verbo è partito)
+    def sv_with_v_in_t(sv_node):
+        """Sostituisce la forma fonetica in v° con la traccia t_i."""
+        sv_copy = deepcopy(sv_node)
+        def replace_v_form(node):
+            for child in node.children:
+                if (child.label == "v" and child.is_head and
+                        child.children and child.children[0].word == verb_form
+                        and not child.children[0].is_trace):
+                    child.children[0] = Node("t", word="t", index=verb_index,
+                                             is_trace=True, is_head=True, color=v_color)
+                    return True
+                if replace_v_form(child):
+                    return True
+            return False
+        replace_v_form(sv_copy)
+        return sv_copy
+
     t_node = Node("T", is_head=True)
     if aux_t:
         t_w = Node(aux_t["form"], word=aux_t["form"], is_head=True)
@@ -768,25 +801,28 @@ def generate_steps(tokens, tipo_verbo=None):
                            f"Il participio '{verb_form}' è già in v e non sale ulteriormente.")
         t_comment_full  = (f"T' proietta ST. La posizione spec-ST è ancora vuota: "
                            f"T porta uNum e attende un elemento con iNum.")
+        sv_for_t = sv_final  # con aux il verbo non è in v°
     else:
         t_w = Node(verb_form, word=verb_form, index=verb_index,
                    is_head=True, color=v_color)
         t_comment_prime = (f"Il verbo '{verb_form}' sale da v a T (V→v→T). "
+                           f"v° ora mostra la traccia t_i: il verbo è partito. "
                            f"Si forma T': T si unisce a Sv come complemento.")
         t_comment_full  = (f"T' proietta ST. La posizione spec-ST è ancora vuota: "
                            f"T porta uNum e attende un elemento con iNum.")
+        sv_for_t = sv_with_v_in_t(sv_final)  # v° mostra traccia
     t_node.children = [t_w]
 
     # Prima T' da sola
     t_prime = Node("T'")
-    t_prime.children = [t_node, sv_final]
+    t_prime.children = [t_node, sv_for_t]
     steps.append(make_step(
         "Movimento di testa → T: T'",
         t_comment_prime,
         t_prime
     ))
 
-    # Poi ST senza spec
+    # Poi ST senza spec (ricostruiamo t_prime con sv_for_t)
     st_no_spec = Node("ST")
     st_no_spec.children = [t_prime]
     steps.append(make_step(
@@ -801,7 +837,7 @@ def generate_steps(tokens, tipo_verbo=None):
         # Costruiamo sv_final_with_trace: spec-Sv = traccia
         t_subj_trace = Node("t", word="t", index=subj_index, is_trace=True,
                             is_head=True, color=subj_color)
-        sv_with_trace = deepcopy(sv_final)
+        sv_with_trace = deepcopy(sv_for_t)
         # Il primo figlio di sv_final (o del suo primo figlio se ci sono aggiunti)
         # è il SD soggetto — lo sostituiamo con la traccia
         def replace_subj_with_trace(node, done=[False]):
@@ -829,7 +865,21 @@ def generate_steps(tokens, tipo_verbo=None):
             st_full
         ))
 
-    st_for_cp = st_full if subj_dp else st_no_spec
+    # Se non c'era subj_dp ma è transitivo → pro sale comunque a spec-ST
+    if not subj_dp and tipo_verbo == "transitivo":
+        pro_dp = build_pro_node("pro", index=subj_index, color=subj_color)
+        t_prime_pro = Node("T'")
+        t_prime_pro.children = [t_node, sv_for_t]
+        st_full = Node("ST")
+        st_full.children = [pro_dp, t_prime_pro]
+        steps.append(make_step(
+            f"Merge interno: pro → spec-ST",
+            f"T porta uNum. pro porta iNum (soggetto nullo referenziale). "
+            f"pro viene copiato in spec-ST per valutare uNum tramite Agree.",
+            st_full
+        ))
+
+    st_for_cp = st_full if (subj_dp or tipo_verbo == "transitivo") else st_no_spec
 
     # Passo 8: movimento wh a spec-SC
     if wh_obl:
