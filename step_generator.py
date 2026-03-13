@@ -1,7 +1,7 @@
-# ver. 15
+# ver. 16
 """
 step_generator.py
-Genera la sequenza di passi per la costruzione passo-passo dell'albero chomskiano
+Genera la sequenza di passi per la costruzione passo-passo dell'albero chomskiano.
 Ogni passo è un dizionario con:
   - 'tree': sottoalbero parziale (Node)
   - 'comment': testo esplicativo
@@ -663,7 +663,9 @@ def generate_steps(tokens, tipo_verbo=None):
         steps.append(make_step(
             f"Merge esterno: V + SD → SV",
             f"V('{verb_form}') si unisce a SD({obj_str}). "
-            f"V assegna il ruolo tematico di <b>tema/paziente</b> a SD({obj_str}).",
+            f"V assegna il ruolo tematico di <b>tema/paziente</b> a SD({obj_str}). "
+            f"V ha però ancora un ruolo tematico da assegnare — il ruolo di <b>agente</b> — "
+            f"quindi la proiezione non si ferma qui: continuerà verso Sv.",
             sv
         ))
         sv_for_shell = sv
@@ -679,12 +681,10 @@ def generate_steps(tokens, tipo_verbo=None):
 
     # Passo: V sale a v — prima mostriamo v' da solo
     v_little = Node("v", is_head=True, color=v_color)
-    if aux_t:
-        v_word2 = Node(verb_form, word=verb_form, index=verb_index,
-                       is_head=True, color=v_color)
-    else:
-        v_word2 = Node("t", word="t", index=verb_index, is_trace=True,
-                       is_head=True, color=v_color)
+    # In questo passo il verbo è appena arrivato in v: mostriamo sempre
+    # la forma fonetica (la traccia in v appare solo quando sale a T)
+    v_word2 = Node(verb_form, word=verb_form, index=verb_index,
+                   is_head=True, color=v_color)
     v_little.children = [v_word2]
 
     # SV con traccia di V
@@ -716,17 +716,7 @@ def generate_steps(tokens, tipo_verbo=None):
         v_prime
     ))
 
-    # Poi Sv senza spec
-    sv_shell_no_spec = Node("Sv")
-    sv_shell_no_spec.children = [v_prime]
-    steps.append(make_step(
-        "Proiezione massimale: Sv (senza spec)",
-        f"v' proietta Sv. La posizione spec-Sv è ancora vuota — "
-        f"l'argomento esterno entrerà nel passo successivo.",
-        sv_shell_no_spec
-    ))
-
-    # Poi Sv con soggetto in spec
+    # Merge esterno del soggetto in spec-Sv
     sv_shell = Node("Sv")
     if subj_dp:
         sv_shell.children = [deepcopy(subj_dp), deepcopy(v_prime)]
@@ -734,7 +724,7 @@ def generate_steps(tokens, tipo_verbo=None):
             f"Merge esterno: {subj_str} → spec-Sv",
             f"SD({subj_str}) entra in spec-Sv tramite Merge esterno. "
             f"v assegna il ruolo tematico di <b>agente</b> a SD({subj_str}). "
-            f"Questo è il punto in cui il soggetto nasce strutturalmente.",
+            f"Questo è il punto in cui l'argomento esterno nasce strutturalmente.",
             sv_shell
         ))
     else:
