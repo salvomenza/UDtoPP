@@ -1,4 +1,4 @@
-# ver. 12
+# ver. 13
 """
 app.py
 Interfaccia web Flask per il generatore di alberi chomskiani.
@@ -9,7 +9,7 @@ import requests
 import json
 from datetime import datetime
 
-VERSION = "0.12"
+VERSION = "0.13"
 BUILD_DATE = datetime.now().strftime("%d/%m/%Y")
 from test_conllu import parse_conllu
 from ud_to_chomsky import build_tp
@@ -563,11 +563,13 @@ HTML = """
   }
 
   let _pendingConllu = null;
+  let currentTipoVerbo = null;
 
   async function genera(tipoVerbo) {
     const frase = document.getElementById("frase").value.trim();
     if (!frase) return;
     currentFrase = frase;
+    if (!tipoVerbo) currentTipoVerbo = null;
     setStatus("Analisi in corso...");
     document.getElementById("tree-section").style.display = "none";
 
@@ -617,6 +619,8 @@ HTML = """
 
   function scegliTipo(tipo) {
     document.getElementById("modal-tipo").style.display = "none";
+    currentTipoVerbo = tipo;
+    steps = [];  // resetta passi precedenti
     genera(tipo);
   }
 
@@ -669,7 +673,7 @@ HTML = """
       const resp = await fetch("/passi", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({conllu: conllu, frase: frase})
+        body: JSON.stringify({conllu: conllu, frase: frase, tipo_verbo: currentTipoVerbo})
       });
       const data = await resp.json();
       if (data.error) { setStatus("Errore passi: " + data.error, true); return; }
@@ -969,9 +973,19 @@ def passi():
     data = request.get_json()
     conllu = data.get("conllu", "")
     frase = data.get("frase", "")
+    tipo_verbo = data.get("tipo_verbo", None)
     try:
         tokens = parse_conllu(conllu)
-        steps = generate_steps(tokens)
+        # Applica correzione tipo_verbo come in /analizza
+        if tipo_verbo == "transitivo":
+            root = next((t for t in tokens if t["deprel"] == "root"), None)
+            if root:
+                for t in tokens:
+                    if (t["deprel"] == "nsubj" and t["head"] == root["id"]
+                            and t["id"] > root["id"]):
+                        t["deprel"] = "obj"
+                        break
+        steps = generate_steps(tokens, tipo_verbo=tipo_verbo)
         result = []
         for s in steps:
             if s["tree"].word == "…":
