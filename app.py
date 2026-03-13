@@ -1,7 +1,7 @@
 # ver. 15
 """
 app.py
-Interfaccia web Flask per il generatore di alberi chomskiani.
+Interfaccia web Flask per il generatore di alberi chomskiani
 """
 
 from flask import Flask, request, jsonify, render_template_string
