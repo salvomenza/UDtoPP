@@ -1,4 +1,4 @@
-# ver. 13
+# ver. 14
 """
 step_generator.py
 Genera la sequenza di passi per la costruzione passo-passo dell'albero chomskiano.
@@ -12,7 +12,7 @@ from copy import deepcopy
 from ud_to_chomsky import (
     Node, build_dp, build_pp, build_advp, build_sc,
     is_passive, is_unaccusative, is_copular, is_wh_token,
-    color_for, children_of
+    color_for, children_of, build_pro_node, prune_single_child_bars
 )
 
 
@@ -203,7 +203,10 @@ def preliminary_comment(tokens, tipo_verbo=None):
 # ── Costruzione passi ────────────────────────────────────────────────────────
 
 def make_step(title, comment, tree):
-    return {"title": title, "comment": comment, "tree": deepcopy(tree)}
+    t = deepcopy(tree)
+    if t.word != "…":  # non toccare il placeholder del test preliminare
+        prune_single_child_bars(t)
+    return {"title": title, "comment": comment, "tree": t}
 
 
 def generate_steps(tokens, tipo_verbo=None):
@@ -576,8 +579,14 @@ def generate_steps(tokens, tipo_verbo=None):
 
     # ── TRANSITIVO (semplice, con ausiliare, ditransitivo, wh) ───────────────
 
-    subj_dp = build_dp(subj_token, tokens, index=subj_index,
-                       color=subj_color) if subj_token else None
+    # Se tipo_verbo=="transitivo" il soggetto esplicito mancava (era postverbale
+    # ed è stato convertito in obj): usiamo pro referenziale come soggetto
+    if tipo_verbo == "transitivo" and subj_token is None:
+        subj_dp = build_pro_node("pro", index=subj_index, color=subj_color)
+        subj_str = "'pro'"
+    else:
+        subj_dp = build_dp(subj_token, tokens, index=subj_index,
+                           color=subj_color) if subj_token else None
 
     larsonian = (wh_obl is not None and wh_case_token is not None
                  and obj_token is not None)
