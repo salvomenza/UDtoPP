@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-# ── Struttura dati v. 8──────────────────────────────────────────────────────────
+# ── Struttura dati ──────────────────────────────────────────────────────────
 
 @dataclass
 class Node:
@@ -704,38 +704,45 @@ def build_xcomp_vp(verb_token_id, xcomp_token, tokens,
 
 # ── Post-processing: elimina proiezioni intermedie con figlio unico ──────────
 
-# Proiezioni massimali che possono essere collassate se hanno un solo figlio
-# (nessun spec, nessun aggiunto — solo la testa)
-_COLLASSABILI = {"SN", "SA", "SAvv"}
+# Proiezioni massimali che si collassano se hanno un solo figlio non-lessicale
+# (corrispondono a SN, SA, SAvv — proiezioni di categoria lessicale senza spec)
+_MAX_COLLASSABILI = {"SN", "SA", "SAvv"}
 
 def prune_single_child_bars(node):
     """
-    Post-order: elimina nodi ridondanti con figlio unico.
-    1. X' (proiezione intermedia) con un solo figlio → sostituita dal figlio
-    2. SN/SA/SAvv con un solo figlio che è la testa → sostituita dal figlio
-       (es. SN → N → parola  diventa  N → parola)
-    Non tocca SD, SP, SV, Sv, ST, SC, SAsp, FR.
+    Post-order: applica la regola X-barra in modo uniforme.
+
+    Due regole, entrambe universali:
+
+    1. XP con un solo figlio X' (proiezione intermedia): collassa X',
+       i suoi figli diventano figli diretti di XP.
+       Questo elimina P', T', v', N', ecc. quando non c'è specificatore.
+
+    2. SN/SA/SAvv con un solo figlio (la testa): collassa la proiezione
+       massimale, il figlio sale al posto di XP nel genitore.
+       Es. SD → D + SN(N(parola)) → SD → D + N(parola)
     """
-    # Ricorsione prima
+    # Ricorsione prima (bottom-up)
     node.children = [prune_single_child_bars(c) for c in node.children]
 
-    # Collassa figli ridondanti
+    # Regola 1: XP → X' (figlio unico intermedio) → collassa X'
+    if (len(node.children) == 1 and
+            node.children[0].label.endswith("'") and
+            not node.children[0].label.endswith("''") and
+            node.children[0].word is None):
+        node.children = node.children[0].children
+
+    # Regola 2: collassa figli SN/SA/SAvv con figlio unico nel genitore
     final = []
     for child in node.children:
-        # X' con un solo figlio
-        if (child.label.endswith("'") and
-                not child.label.endswith("''") and
+        if (child.label in _MAX_COLLASSABILI and
                 len(child.children) == 1 and
                 child.word is None):
-            final.append(child.children[0])
-        # SN/SA/SAvv con un solo figlio (la testa lessicale)
-        elif (child.label in _COLLASSABILI and
-              len(child.children) == 1 and
-              child.word is None):
             final.append(child.children[0])
         else:
             final.append(child)
     node.children = final
+
     return node
 
 # ── Costruzione ST (punto di ingresso) ───────────────────────────────────────
@@ -1004,12 +1011,19 @@ def build_tp(tokens, tipo_verbo=None):
                       is_head=True, color=v_color)
         v_node.children = [t_verb]
 
-        # traccia del soggetto in posizione interna (nasce come oggetto)
-        t_subj_inner = Node("t", word="t", index=subj_index, is_trace=True,
-                            is_head=True, color=subj_color)
+        # SD soggetto resta in situ come complemento di V (non si muove).
+        # Non porta indice j — pro_espl non è coindicizzato con esso.
+        sd_subj = build_dp(subj_token, tokens) if subj_token else None
 
         vp = Node("SV")
-        vp.children = [v_node, t_subj_inner]
+        if sd_subj:
+            vp.children = [v_node, sd_subj]
+        else:
+            vp.children = [v_node]
+
+        # pro_espl in spec-ST valuta EPP; Agree valuta φ con SD in situ
+        subj_dp = build_pro_node("pro_espl", index=subj_index,
+                                 color=subj_color)
 
         # T riceve la forma fonetica del verbo
         t_node = Node("T", is_head=True, color=v_color)
