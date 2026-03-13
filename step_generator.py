@@ -1,7 +1,7 @@
 # ver. 15
 """
 step_generator.py
-Genera la sequenza di passi per la costruzione passo-passo dell'albero chomskiano.
+Genera la sequenza di passi per la costruzione passo-passo dell'albero chomskiano
 Ogni passo è un dizionario con:
   - 'tree': sottoalbero parziale (Node)
   - 'comment': testo esplicativo
