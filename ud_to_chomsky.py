@@ -1,3 +1,4 @@
+# ver. 12
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
