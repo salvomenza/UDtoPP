@@ -1,4 +1,4 @@
-# ver. 19
+# ver. 21
 """
 step_generator.py
 Genera la sequenza di passi per la costruzione passo-passo dell'albero chomskiano.
@@ -852,22 +852,13 @@ def generate_steps(tokens, tipo_verbo=None):
         sv_for_t = sv_with_v_in_t(sv_final)  # v° mostra traccia
     t_node.children = [t_w]
 
-    # Prima T' da sola
+    # T' da sola (senza spec — il passo ST senza spec è eliminato)
     t_prime = Node("T'")
     t_prime.children = [t_node, sv_for_t]
     steps.append(make_step(
         "Movimento di testa → T: T'",
         t_comment_prime,
         t_prime
-    ))
-
-    # Poi ST senza spec (ricostruiamo t_prime con sv_for_t)
-    st_no_spec = Node("ST")
-    st_no_spec.children = [t_prime]
-    steps.append(make_step(
-        "Proiezione massimale: ST (senza spec)",
-        t_comment_full,
-        st_no_spec
     ))
 
     # Passo 7: soggetto sale a spec-ST
@@ -918,7 +909,7 @@ def generate_steps(tokens, tipo_verbo=None):
             st_full
         ))
 
-    st_for_cp = st_full if (subj_dp or tipo_verbo == "transitivo") else st_no_spec
+    st_for_cp = st_full if (subj_dp or tipo_verbo == "transitivo") else t_prime
 
     # Passo 8: movimento wh a spec-SC
     if wh_obl:
