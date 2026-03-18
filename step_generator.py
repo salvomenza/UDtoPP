@@ -1,4 +1,4 @@
-# ver. 18
+# ver. 19
 """
 step_generator.py
 Genera la sequenza di passi per la costruzione passo-passo dell'albero chomskiano.
@@ -203,11 +203,42 @@ def preliminary_comment(tokens, tipo_verbo=None):
 
 # ── Costruzione passi ────────────────────────────────────────────────────────
 
+def node_signatures(node, sigs=None):
+    """Raccoglie le firme di tutti i nodi (label+word+index) in un set."""
+    if sigs is None:
+        sigs = set()
+    sig = (node.label, node.word or "", node.index or "")
+    sigs.add(sig)
+    for child in node.children:
+        node_signatures(child, sigs)
+    return sigs
+
+
+def mark_new_nodes(node, prev_sigs):
+    """Marca is_new=True sui nodi non presenti nel passo precedente."""
+    sig = (node.label, node.word or "", node.index or "")
+    node.is_new = sig not in prev_sigs
+    for child in node.children:
+        mark_new_nodes(child, prev_sigs)
+
+
+_prev_step_sigs = set()
+
+
 def make_step(title, comment, tree):
+    global _prev_step_sigs
     t = deepcopy(tree)
-    if t.word != "…":  # non toccare il placeholder del test preliminare
+    if t.word != "…":
         prune_single_child_bars(t)
+        mark_new_nodes(t, _prev_step_sigs)
+        _prev_step_sigs = node_signatures(t)
     return {"title": title, "comment": comment, "tree": t}
+
+
+def reset_step_state():
+    """Resetta lo stato tra frasi diverse."""
+    global _prev_step_sigs
+    _prev_step_sigs = set()
 
 
 def generate_steps(tokens, tipo_verbo=None):
@@ -289,6 +320,7 @@ def generate_steps(tokens, tipo_verbo=None):
                               and t["head"] == wh_obl["id"]), None)
         wh_noun_token = wh_obl
 
+    reset_step_state()  # resetta stato tra frasi
     steps = []
     verb_form = root["form"]
     verb_lemma = root["lemma"]
@@ -739,7 +771,9 @@ def generate_steps(tokens, tipo_verbo=None):
             f"Merge esterno: {subj_str} → spec-Sv",
             f"SD({subj_str}) entra in spec-Sv tramite Merge esterno. "
             f"v assegna il ruolo tematico di <b>agente</b> a SD({subj_str}). "
-            f"Questo è il punto in cui l'argomento esterno nasce strutturalmente.",
+            f"Questo è il punto in cui l'argomento esterno nasce strutturalmente. "
+            f"La derivazione non può fermarsi qui: l'espressione è ancora priva "
+            f"di informazioni sulla collocazione temporale dell'evento.",
             sv_shell
         ))
     else:
@@ -799,17 +833,22 @@ def generate_steps(tokens, tipo_verbo=None):
         t_w = Node(aux_t["form"], word=aux_t["form"], is_head=True)
         t_comment_prime = (f"Si forma T': la testa T('{aux_t['form']}') si unisce a Sv come complemento. "
                            f"Il participio '{verb_form}' è già in v e non sale ulteriormente.")
-        t_comment_full  = (f"T' proietta ST. La posizione spec-ST è ancora vuota: "
-                           f"T porta uNum e attende un elemento con iNum.")
+        t_comment_full  = (f"T' proietta ST. La testa T° porta informazione "
+                           f"temporale e il tratto uNum non ancora valorizzato. "
+                           f"spec-ST è vuoto: attende il soggetto.")
         sv_for_t = sv_final  # con aux il verbo non è in v°
     else:
         t_w = Node(verb_form, word=verb_form, index=verb_index,
                    is_head=True, color=v_color)
-        t_comment_prime = (f"Il verbo '{verb_form}' sale da v a T (V→v→T). "
-                           f"v° ora mostra la traccia t_i: il verbo è partito. "
-                           f"Si forma T': T si unisce a Sv come complemento.")
-        t_comment_full  = (f"T' proietta ST. La posizione spec-ST è ancora vuota: "
-                           f"T porta uNum e attende un elemento con iNum.")
+        t_comment_prime = (f"Poiché il verbo deve salire almeno fino a T° "
+                           f"(è una caratteristica parametrica dell'italiano), "
+                           f"'{verb_form}' sale da v a T (V→v→T). "
+                           f"Il risultato di questo merge è il nuovo insieme T', "
+                           f"costituito appunto dal verbo che si è risaldato "
+                           f"(internal merge) all'insieme precedente (Sv).")
+        t_comment_full  = (f"T' proietta ST. La testa T° porta informazione "
+                           f"temporale e il tratto uNum non ancora valorizzato. "
+                           f"spec-ST è vuoto: attende il soggetto.")
         sv_for_t = sv_with_v_in_t(sv_final)  # v° mostra traccia
     t_node.children = [t_w]
 
@@ -857,11 +896,11 @@ def generate_steps(tokens, tipo_verbo=None):
         st_full.children = [deepcopy(subj_dp), t_prime_with_trace]
         steps.append(make_step(
             f"Merge interno: {subj_str} → spec-ST",
-            f"T porta uNum. SD({subj_str}) porta iNum. "
-            f"SD viene copiato in spec-ST per valutare uNum tramite Agree: "
-            f"da spec-ST SD c-comanda T. "
-            f"Come effetto collaterale SD riceve Caso nominativo. "
-            f"Rimane una traccia t_{subj_index} in spec-Sv.",
+            f"SD({subj_str}) viene ricopiato (internal merge) e risaldato a T'. "
+            f"Il merge di SD({subj_str}) e T' forma ST. "
+            f"Questo merge valuta il tratto uNum su T°: "
+            f"da spec-ST SD c-comanda T e i loro tratti di numero si valorizzano a vicenda. "
+            f"Come effetto collaterale SD riceve Caso nominativo.",
             st_full
         ))
 
