@@ -1,4 +1,4 @@
-# ver. 21
+# ver. 22
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -98,12 +98,19 @@ def is_unaccusative(tokens):
     has_agent = "obl:agent" in deps
     has_aux = any(t["upos"] == "AUX" for t in children_of(tokens, root["id"]))
     if not has_obj and not has_agent and not has_aux:
-        nsubj = next((t for t in tokens
-                      if t["deprel"] == "nsubj" and t["head"] == root["id"]), None)
-        # Inaccusativo se lemma nella lista — indipendentemente dall'ordine del soggetto
         if root["lemma"] in VERBI_INACCUSATIVI:
             return True
     return False
+
+
+def has_postverbal_subject(tokens):
+    """True se il soggetto è postverbale (presentativo)."""
+    root = next((t for t in tokens if t["deprel"] == "root"), None)
+    if not root:
+        return False
+    nsubj = next((t for t in tokens
+                  if t["deprel"] == "nsubj" and t["head"] == root["id"]), None)
+    return nsubj is not None and nsubj["id"] > root["id"]
 
 
 def is_copular(tokens):
@@ -1012,24 +1019,35 @@ def build_tp(tokens, tipo_verbo=None):
                       is_head=True, color=v_color)
         v_node.children = [t_verb]
 
-        # SD soggetto resta in situ come complemento di V (non si muove).
-        # Non porta indice j — pro_espl non è coindicizzato con esso.
-        sd_subj = build_dp(subj_token, tokens) if subj_token else None
-
-        vp = Node("SV")
-        if sd_subj:
-            vp.children = [v_node, sd_subj]
-        else:
-            vp.children = [v_node]
-
-        # pro_espl in spec-ST valuta EPP; Agree valuta φ con SD in situ
-        subj_dp = build_pro_node("pro_espl", index=subj_index,
-                                 color=subj_color)
-
         # T riceve la forma fonetica del verbo
         t_node = Node("T", is_head=True, color=v_color)
         t_node.children = [Node(root["form"], word=root["form"],
                                 index=verb_index, is_head=True, color=v_color)]
+
+        if has_postverbal_subject(tokens):
+            # Presentativo: pro_espl in spec-ST, soggetto resta in situ in SV
+            sd_subj = build_dp(subj_token, tokens) if subj_token else None
+            vp = Node("SV")
+            if sd_subj:
+                vp.children = [v_node, sd_subj]
+            else:
+                vp.children = [v_node]
+            # pro_espl in spec-ST — non porta movement_type (non si muove)
+            subj_dp = build_pro_node("pro_espl", index=subj_index,
+                                     color=subj_color)
+        else:
+            # Soggetto preverbale: nasce in SV come complemento di V,
+            # sale a spec-ST (traccia t_j in SV)
+            t_subj = Node("SD", index=subj_index, is_trace=True, color=subj_color)
+            t_subj_word = Node("t", word="t", index=subj_index, is_trace=True,
+                               is_head=True, color=subj_color)
+            t_subj.children = [t_subj_word]
+            vp = Node("SV")
+            vp.children = [v_node, t_subj]
+            # soggetto sale a spec-ST
+            subj_dp = build_dp(subj_token, tokens, index=subj_index,
+                               color=subj_color) if subj_token else None
+
         main_complement = vp
 
     elif modal_aux:
@@ -1200,11 +1218,21 @@ def annotate_movements(node, parent_label=None):
                 node.movement_type = "sintagmatico"
     else:
         # Nodo strutturale con indice: propaga movement_type
+        # ma NON per pro_espl (non si muove — è già in posizione finale)
         idx = node.index or ""
-        if idx == "j" and not node.is_trace:
-            node.movement_type = "soggetto"
-        elif idx == "k" and not node.is_trace:
-            node.movement_type = "sintagmatico"
+        is_pro_espl = any(
+            c.word in ("pro_espl", "pro", "PRO", "PRO_arb")
+            for c in node.children
+            if c.word is not None
+        ) or any(
+            any(gc.word in ("pro_espl",) for gc in c.children if gc.word is not None)
+            for c in node.children
+        )
+        if not is_pro_espl:
+            if idx == "j" and not node.is_trace:
+                node.movement_type = "soggetto"
+            elif idx == "k" and not node.is_trace:
+                node.movement_type = "sintagmatico"
 
 # ── Pretty print per debug ───────────────────────────────────────────────────
 
