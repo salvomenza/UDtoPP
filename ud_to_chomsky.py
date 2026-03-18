@@ -1,4 +1,4 @@
-# ver. 22
+# ver. 24
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -713,44 +713,23 @@ def build_xcomp_vp(verb_token_id, xcomp_token, tokens,
 
 # ── Post-processing: elimina proiezioni intermedie con figlio unico ──────────
 
-# Proiezioni massimali che si collassano se hanno un solo figlio non-lessicale
-# (corrispondono a SN, SA, SAvv — proiezioni di categoria lessicale senza spec)
-_MAX_COLLASSABILI = {"SN", "SA", "SAvv"}
-
 def prune_single_child_bars(node):
     """
     Post-order: applica la regola X-barra in modo uniforme.
 
-    Due regole, entrambe universali:
-
-    1. XP con un solo figlio X' (proiezione intermedia): collassa X',
-       i suoi figli diventano figli diretti di XP.
-       Questo elimina P', T', v', N', ecc. quando non c'è specificatore.
-
-    2. SN/SA/SAvv con un solo figlio (la testa): collassa la proiezione
-       massimale, il figlio sale al posto di XP nel genitore.
-       Es. SD → D + SN(N(parola)) → SD → D + N(parola)
+    Regola unica: X' con figlio unico → collassa X'.
+    Le proiezioni massimali (SN, SA, SAvv, SD, SP, ecc.) non vengono
+    mai collassate — hanno valore strutturale indipendente.
     """
     # Ricorsione prima (bottom-up)
     node.children = [prune_single_child_bars(c) for c in node.children]
 
-    # Regola 1: XP → X' (figlio unico intermedio) → collassa X'
+    # Regola: XP → X' (figlio unico intermedio) → collassa X'
     if (len(node.children) == 1 and
             node.children[0].label.endswith("'") and
             not node.children[0].label.endswith("''") and
             node.children[0].word is None):
         node.children = node.children[0].children
-
-    # Regola 2: collassa figli SN/SA/SAvv con figlio unico nel genitore
-    final = []
-    for child in node.children:
-        if (child.label in _MAX_COLLASSABILI and
-                len(child.children) == 1 and
-                child.word is None):
-            final.append(child.children[0])
-        else:
-            final.append(child)
-    node.children = final
 
     return node
 
@@ -1229,10 +1208,16 @@ def annotate_movements(node, parent_label=None):
             for c in node.children
         )
         if not is_pro_espl:
-            if idx == "j" and not node.is_trace:
+            if idx == "j":
                 node.movement_type = "soggetto"
-            elif idx == "k" and not node.is_trace:
+                if node.is_trace:
+                    node.is_copy = True
+                    node.is_trace = False
+            elif idx == "k":
                 node.movement_type = "sintagmatico"
+                if node.is_trace:
+                    node.is_copy = True
+                    node.is_trace = False
 
 # ── Pretty print per debug ───────────────────────────────────────────────────
 
