@@ -1,4 +1,4 @@
-# ver. 22
+# ver. 24
 """
 app.py
 Interfaccia web Flask per il generatore di alberi chomskiani.
@@ -9,7 +9,7 @@ import requests
 import json
 from datetime import datetime
 
-VERSION = "0.22"
+VERSION = "0.24"
 BUILD_DATE = datetime.now().strftime("%d/%m/%Y")
 BUILD_TIME = datetime.now().strftime("%H:%M")
 from test_conllu import parse_conllu
@@ -1045,7 +1045,7 @@ def analizza():
                 })
 
         tree = build_tp(tokens, tipo_verbo=tipo_verbo)
-        svg = tree_to_svg(tree, title=frase)
+        svg = tree_to_svg(tree, title=frase, animate=True)
         # Usa SVG nativo UDPipe se disponibile, altrimenti fallback artigianale
         ud_svg = ud_svg_native if ud_svg_native else build_ud_svg(tokens)
         return jsonify({"svg": svg, "conllu": conllu, "ud_svg": ud_svg})
@@ -1062,7 +1062,7 @@ def da_conllu():
     try:
         tokens = parse_conllu(conllu)
         tree = build_tp(tokens)
-        svg = tree_to_svg(tree, title=frase)
+        svg = tree_to_svg(tree, title=frase, animate=True)
         return jsonify({"svg": svg})
     except Exception as e:
         return jsonify({"error": str(e)})
@@ -1094,7 +1094,7 @@ def passi():
                 # passo test preliminare: nessun SVG, solo commento
                 svg = "<div style=\'text-align:center;padding:40px;color:#7a6a5a;font-style:italic;\'>Leggi il commento prima di procedere.</div>"
             else:
-                svg = tree_to_svg(s["tree"], title=None)
+                svg = tree_to_svg(s["tree"], title=None, animate=True)
             result.append({"title": s["title"], "comment": s["comment"], "svg": svg})
         return jsonify({"steps": result})
     except Exception as e:
