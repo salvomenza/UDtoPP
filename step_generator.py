@@ -1,4 +1,4 @@
-# ver. 22
+# ver. 24
 """
 step_generator.py
 Genera la sequenza di passi per la costruzione passo-passo dell'albero chomskiano.
@@ -638,30 +638,39 @@ def generate_steps(tokens, tipo_verbo=None):
     larsonian = (wh_obl is not None and wh_case_token is not None
                  and obj_token is not None)
 
-    # Passo 1: SD soggetto
+    # Passo 1: SD soggetto — senza indice (non si è ancora mosso)
     if subj_dp:
+        subj_no_idx = deepcopy(subj_dp)
+        def strip_index(node):
+            node.index = None
+            for c in node.children: strip_index(c)
+        strip_index(subj_no_idx)
         steps.append(make_step(
             f"Merge: SD soggetto",
             f"Costruiamo SD({subj_str}). "
             f"Questo elemento sarà l'argomento esterno e riceverà "
-            f"il ruolo tematico di <b>agente</b> da v.",
-            deepcopy(subj_dp)
+            f"il ruolo tematico di <b>agente</b> da v. "
+            f"Per ora lo mettiamo da parte.",
+            subj_no_idx
         ))
 
-    # Passo 2: SD oggetto (se presente)
+    # Passo 2: SD oggetto (se presente) — mettiamo da parte
     if obj_token:
         obj_dp = build_dp(obj_token, tokens)
         steps.append(make_step(
             f"Merge: SD oggetto",
             f"Costruiamo SD({obj_str}). "
             f"Questo elemento sarà l'argomento interno di V "
-            f"e riceverà il ruolo tematico di <b>tema/paziente</b>.",
+            f"e riceverà il ruolo tematico di <b>tema/paziente</b>. "
+            f"Per ora lo mettiamo da parte.",
             obj_dp
         ))
 
-    # Passo 3: SV
+    # Passo 3: SV — verbo come radice [lemma-] e SD argomento visibile
     v_node = Node("V", is_head=True, color=v_color)
-    v_word_node = Node(verb_form, word=verb_form, index=verb_index,
+    # Nel merge iniziale il verbo è nella sua forma astratta (radice)
+    verb_root = verb_lemma.rstrip("eiar") + "-" if verb_lemma else verb_form
+    v_word_node = Node(f"[{verb_root}]", word=f"[{verb_root}]", index=verb_index,
                        is_head=True, color=v_color)
     v_node.children = [v_word_node]
 
@@ -730,7 +739,9 @@ def generate_steps(tokens, tipo_verbo=None):
     v_little = Node("v", is_head=True, color=v_color)
     # In questo passo il verbo è appena arrivato in v: mostriamo sempre
     # la forma fonetica (la traccia in v appare solo quando sale a T)
-    v_word2 = Node(verb_form, word=verb_form, index=verb_index,
+    # v° mostra la radice astratta (la forma flessa emerge solo dopo Agree con soggetto)
+    verb_root_v = f"[{verb_lemma.rstrip('eiar')}-]" if verb_lemma else f"[{verb_form}]"
+    v_word2 = Node(verb_root_v, word=verb_root_v, index=verb_index,
                    is_head=True, color=v_color)
     v_little.children = [v_word2]
 
@@ -816,8 +827,9 @@ def generate_steps(tokens, tipo_verbo=None):
         sv_copy = deepcopy(sv_node)
         def replace_v_form(node):
             for child in node.children:
+                verb_root_v2 = f"[{verb_lemma.rstrip('eiar')}-]" if verb_lemma else f"[{verb_form}]"
                 if (child.label == "v" and child.is_head and
-                        child.children and child.children[0].word == verb_form
+                        child.children and child.children[0].word in (verb_form, verb_root_v2)
                         and not child.children[0].is_trace):
                     child.children[0] = Node("t", word="t", index=verb_index,
                                              is_trace=True, is_head=True, color=v_color)
@@ -838,14 +850,17 @@ def generate_steps(tokens, tipo_verbo=None):
                            f"spec-ST è vuoto: attende il soggetto.")
         sv_for_t = sv_final  # con aux il verbo non è in v°
     else:
-        t_w = Node(verb_form, word=verb_form, index=verb_index,
-                   is_head=True, color=v_color)
+        # T° mostra tratti astratti: la forma flessa emerge solo dopo Agree col soggetto
+        t_abstract = "[pres.; uNum; uPers]"
+        t_w = Node(t_abstract, word=t_abstract, is_head=True)
+        t_w_final = Node(verb_form, word=verb_form, index=verb_index,
+                         is_head=True, color=v_color)
         t_comment_prime = (f"Poiché il verbo deve salire almeno fino a T° "
                            f"(è una caratteristica parametrica dell'italiano), "
-                           f"'{verb_form}' sale da v a T (V→v→T). "
-                           f"Il risultato di questo merge è il nuovo insieme T', "
-                           f"costituito appunto dal verbo che si è risaldato "
-                           f"(internal merge) all'insieme precedente (Sv).")
+                           f"la radice verbale sale da v a T (V→v→T). "
+                           f"T° porta i tratti astratti di tempo e accordo "
+                           f"[pres.; uNum; uPers] non ancora valorizzati. "
+                           f"Il risultato è il nuovo insieme T'.")
         t_comment_full  = (f"T' proietta ST. La testa T° porta informazione "
                            f"temporale e il tratto uNum non ancora valorizzato. "
                            f"spec-ST è vuoto: attende il soggetto.")
@@ -881,14 +896,19 @@ def generate_steps(tokens, tipo_verbo=None):
                 replace_subj_with_trace(child, done)
         replace_subj_with_trace(sv_with_trace)
 
+        # Nel passo finale T° assume la forma flessa (Agree col soggetto)
+        t_node_final = Node("T", is_head=True, color=v_color if not aux_t else None)
+        t_node_final.children = [t_w_final if not aux_t else t_w]
         t_prime_with_trace = Node("T'")
-        t_prime_with_trace.children = [t_node, sv_with_trace]
+        t_prime_with_trace.children = [t_node_final, sv_with_trace]
         st_full = Node("ST")
         st_full.children = [deepcopy(subj_dp), t_prime_with_trace]
         steps.append(make_step(
             f"Merge interno: {subj_str} → spec-ST",
             f"SD({subj_str}) viene ricopiato (internal merge) e risaldato a T'. "
             f"Il merge di SD({subj_str}) e T' forma ST. "
+            f"L'Agree tra T° e SD valorizza uNum e uPers: "
+            f"T° assume la forma flessa <b>{verb_form}</b>. "
             f"Questo merge valuta il tratto uNum su T°: "
             f"da spec-ST SD c-comanda T e i loro tratti di numero si valorizzano a vicenda. "
             f"Come effetto collaterale SD riceve Caso nominativo.",
