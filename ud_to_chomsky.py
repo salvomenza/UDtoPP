@@ -1,4 +1,4 @@
-# ver. 17
+# ver. 18
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -30,6 +30,9 @@ class Node:
     is_trace: bool = False
     is_head: bool = False
     color: Optional[str] = None
+    is_copy: bool = False        # copia di movimento — mostrata con { }
+    is_pronounced: bool = False  # forma pronunciata — mostrata in grassetto
+    movement_type: Optional[str] = None  # "sintagmatico"|"testa"|"soggetto" per frecce
 
     def __repr__(self):
         if self.word:
@@ -1152,10 +1155,45 @@ def build_tp(tokens, tipo_verbo=None):
     tp.children = [subj_dp, t_prime] if subj_dp else [t_prime]
 
     if wh_xp is not None:
-        return prune_single_child_bars(wrap_cp(tp, wh_xp))
+        result = prune_single_child_bars(wrap_cp(tp, wh_xp))
+        annotate_movements(result)
+        return result
 
-    return prune_single_child_bars(tp)
+    result = prune_single_child_bars(tp)
+    annotate_movements(result)
+    return result
 
+
+
+# ── Annotazione movimenti per frecce SVG ────────────────────────────────────
+
+def annotate_movements(node, parent_label=None):
+    """
+    Post-order: converte is_trace in is_copy con movement_type appropriato.
+    - Tracce in spec-ST (indice j) = movimento soggetto
+    - Tracce in V°/v° (indice i) = movimento verbo
+    - Tracce in posizione oggetto (indice k) = movimento sintagmatico clitico
+    Assegna is_pronounced=True ai nodi terminali non-copia.
+    """
+    for child in node.children:
+        annotate_movements(child, node.label)
+
+    if node.word is not None:
+        if node.is_trace:
+            idx = node.index or ""
+            plabel = parent_label or ""
+            if idx == "j":
+                node.is_copy = True
+                node.movement_type = "soggetto"
+            elif idx == "i":
+                node.is_copy = True
+                node.movement_type = "verbo"
+            elif idx == "k":
+                node.is_copy = True
+                node.movement_type = "sintagmatico"
+            node.is_trace = False
+        elif not node.is_copy:
+            node.is_pronounced = True
 
 # ── Pretty print per debug ───────────────────────────────────────────────────
 
