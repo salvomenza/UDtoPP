@@ -1201,6 +1201,13 @@ def annotate_movements(node, parent_label=None):
                 node.movement_type = "verbo"
             elif idx == "k":
                 node.movement_type = "sintagmatico"
+    else:
+        # Nodo strutturale con indice: propaga movement_type
+        idx = node.index or ""
+        if idx == "j" and not node.is_trace:
+            node.movement_type = "soggetto"
+        elif idx == "k" and not node.is_trace:
+            node.movement_type = "sintagmatico"
 
 # ── Pretty print per debug ───────────────────────────────────────────────────
 
