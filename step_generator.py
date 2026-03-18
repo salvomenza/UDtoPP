@@ -1,4 +1,4 @@
-# ver. 21
+# ver. 22
 """
 step_generator.py
 Genera la sequenza di passi per la costruzione passo-passo dell'albero chomskiano.
