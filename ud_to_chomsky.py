@@ -1,4 +1,4 @@
-# ver. 18
+# ver. 19
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -33,6 +33,7 @@ class Node:
     is_copy: bool = False        # copia di movimento — mostrata con { }
     is_pronounced: bool = False  # forma pronunciata — mostrata in grassetto
     movement_type: Optional[str] = None  # "sintagmatico"|"testa"|"soggetto" per frecce
+    is_new: bool = False         # nodo nuovo in questo passo — evidenziato
 
     def __repr__(self):
         if self.word:
