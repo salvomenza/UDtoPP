@@ -88,21 +88,21 @@ def generate_arrows(registry):
 
         # Ordina per y decrescente: base = più in basso (y più alta)
         nodes_sorted = sorted(nodes, key=lambda n: -n["y"])
-        base = nodes_sorted[0]
 
-        for target in nodes_sorted[1:]:
-            x1, y1 = base["x"], base["y"]
-            x2, y2 = target["x"], target["y"]
+        # Frecce successive: A→B, B→C (non A→B e A→C)
+        for i in range(len(nodes_sorted) - 1):
+            src = nodes_sorted[i]
+            tgt = nodes_sorted[i + 1]
+            x1, y1 = src["x"], src["y"]
+            x2, y2 = tgt["x"], tgt["y"]
             mid_x = (x1 + x2) / 2
             mid_y = (y1 + y2) / 2
 
             if mtype == "testa":
-                # Sorriso: curva verso il basso
                 ctrl_x = mid_x
                 ctrl_y = max(y1, y2) + 55
                 path = f'M {x1:.1f} {y1:.1f} Q {ctrl_x:.1f} {ctrl_y:.1f} {x2:.1f} {y2:.1f}'
             else:
-                # Arco verso sinistra
                 ctrl_x = min(x1, x2) - 70
                 ctrl_y = mid_y
                 path = f'M {x1:.1f} {y1:.1f} Q {ctrl_x:.1f} {ctrl_y:.1f} {x2:.1f} {y2:.1f}'
