@@ -1169,11 +1169,11 @@ def build_tp(tokens, tipo_verbo=None):
 
 def annotate_movements(node, parent_label=None):
     """
-    Post-order: converte is_trace in is_copy con movement_type appropriato.
-    - Tracce in spec-ST (indice j) = movimento soggetto
-    - Tracce in V°/v° (indice i) = movimento verbo
-    - Tracce in posizione oggetto (indice k) = movimento sintagmatico clitico
-    Assegna is_pronounced=True ai nodi terminali non-copia.
+    Post-order: converte is_trace in is_copy con movement_type appropriato,
+    e assegna movement_type anche ai nodi di ARRIVO (pronunciati con indice).
+    - Indice j = movimento soggetto
+    - Indice i = movimento verbo
+    - Indice k = movimento sintagmatico clitico
     """
     for child in node.children:
         annotate_movements(child, node.label)
@@ -1181,7 +1181,6 @@ def annotate_movements(node, parent_label=None):
     if node.word is not None:
         if node.is_trace:
             idx = node.index or ""
-            plabel = parent_label or ""
             if idx == "j":
                 node.is_copy = True
                 node.movement_type = "soggetto"
@@ -1194,6 +1193,14 @@ def annotate_movements(node, parent_label=None):
             node.is_trace = False
         elif not node.is_copy:
             node.is_pronounced = True
+            # Assegna movement_type anche al nodo di arrivo (pronunciato con indice)
+            idx = node.index or ""
+            if idx == "j":
+                node.movement_type = "soggetto"
+            elif idx == "i":
+                node.movement_type = "verbo"
+            elif idx == "k":
+                node.movement_type = "sintagmatico"
 
 # ── Pretty print per debug ───────────────────────────────────────────────────
 
