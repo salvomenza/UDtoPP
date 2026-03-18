@@ -1,4 +1,4 @@
-# ver. 19
+# ver. 21
 """
 app.py
 Interfaccia web Flask per il generatore di alberi chomskiani.
@@ -9,7 +9,7 @@ import requests
 import json
 from datetime import datetime
 
-VERSION = "0.19"
+VERSION = "0.21"
 BUILD_DATE = datetime.now().strftime("%d/%m/%Y")
 BUILD_TIME = datetime.now().strftime("%H:%M")
 from test_conllu import parse_conllu
@@ -461,6 +461,33 @@ HTML = """
     <div id="status"></div>
   </div>
 
+  <!-- Dialogo inergativo/inaccusativo -->
+  <div id="modal-iner" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+       background:rgba(0,0,0,0.45); z-index:1000; align-items:center; justify-content:center;">
+    <div style="background:#fff8f0; border-radius:8px; padding:28px 32px; max-width:420px;
+                box-shadow:0 4px 24px rgba(0,0,0,0.18); font-family:Georgia,serif;">
+      <p style="margin:0 0 20px; font-size:1.05em; color:#2c1e0f; line-height:1.6;">
+        Il verbo <strong id="modal-iner-verbo"></strong> è inaccusativo?
+      </p>
+      <p style="margin:0 0 20px; font-size:0.9em; color:#5a4a3a; line-height:1.5;">
+        <em>Inaccusativo</em>: soggetto = tema/paziente, seleziona <em>essere</em> (es. <em>arrivare, cadere, nascere</em>).<br>
+        <em>Inergativo</em>: soggetto = agente, seleziona <em>avere</em> (es. <em>correre, dormire, parlare</em>).
+      </p>
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <button onclick="scegliInerg('inaccusativo')"
+          style="flex:1; padding:12px; background:#3a5a7a; color:#fff; border:none;
+                 border-radius:5px; cursor:pointer; font-size:1em;">
+          Sì, inaccusativo
+        </button>
+        <button onclick="scegliInerg('inergativo')"
+          style="flex:1; padding:12px; background:#7a5a3a; color:#fff; border:none;
+                 border-radius:5px; cursor:pointer; font-size:1em;">
+          No, inergativo
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Dialogo transitivo/inaccusativo -->
   <div id="modal-tipo" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%;
        background:rgba(0,0,0,0.45); z-index:1000; align-items:center; justify-content:center;">
@@ -565,6 +592,7 @@ HTML = """
 
   let _pendingConllu = null;
   let currentTipoVerbo = null;
+  let _pendingIner = null;
 
   async function genera(tipoVerbo) {
     const frase = document.getElementById("frase").value.trim();
@@ -593,6 +621,16 @@ HTML = """
         return;
       }
 
+      // Il server chiede di disambiguare inergativo/inaccusativo
+      if (data.chiedi_iner) {
+        _pendingIner = data.conllu;
+        setStatus("");
+        document.getElementById("modal-iner-verbo").textContent = data.verbo;
+        const modal = document.getElementById("modal-iner");
+        modal.style.display = "flex";
+        return;
+      }
+
       // Il server chiede di disambiguare transitivo/inaccusativo
       if (data.chiedi_tipo) {
         _pendingConllu = data.conllu;
@@ -618,6 +656,15 @@ HTML = """
     } catch(e) {
       setStatus("Errore di connessione: " + e.message, true);
     }
+  }
+
+  function scegliInerg(tipo) {
+    document.getElementById("modal-iner").style.display = "none";
+    currentTipoVerbo = tipo;
+    steps = [];
+    currentStep = 0;
+    genera(tipo, _pendingIner);
+    _pendingIner = null;
   }
 
   function scegliTipo(tipo) {
@@ -831,6 +878,48 @@ def build_ud_svg(tokens):
     return "".join(out)
 
 
+def detect_inergativo_inaccusativo(tokens):
+    """
+    Rileva ambiguità inergativo/inaccusativo per verbi intransitivi
+    con soggetto preverbale e nessun oggetto.
+    Restituisce {"verbo": ...} se ambiguo, None altrimenti.
+    """
+    from ud_to_chomsky import VERBI_INACCUSATIVI, _mood, _get_feats
+    root = next((t for t in tokens if t["deprel"] == "root"), None)
+    if not root:
+        return None
+    # Solo verbi finiti
+    feats = _get_feats(root)
+    mood = next((f.split("=")[1] for f in feats.split("|")
+                 if f.startswith("Mood=")), None)
+    if mood not in ("Ind","Sub","Cnd","Imp"):
+        return None
+    # Deve avere soggetto preverbale
+    nsubj = next(
+        (t for t in tokens
+         if t["deprel"] in ("nsubj",) and t["head"] == root["id"]
+         and t["id"] < root["id"]),
+        None
+    )
+    if not nsubj:
+        return None
+    # Non deve avere oggetto
+    has_obj = any(t["deprel"] == "obj" and t["head"] == root["id"] for t in tokens)
+    if has_obj:
+        return None
+    # Non deve essere passivo
+    if any(t["deprel"] == "aux:pass" for t in tokens):
+        return None
+    # Non deve avere modale
+    from ud_to_chomsky import VERBI_MODALI
+    if any(t["lemma"] in VERBI_MODALI for t in tokens):
+        return None
+    # Se già nella lista inaccusativi certi, non chiediamo
+    if root["lemma"] in VERBI_INACCUSATIVI:
+        return None
+    return {"verbo": root["form"]}
+
+
 def detect_transitivo_inaccusativo(tokens):
     """
     Rileva ambiguità transitivo/inaccusativo.
@@ -934,7 +1023,17 @@ def analizza():
     try:
         tokens = parse_conllu(conllu)
 
-        # Rilevamento ambiguità transitivo/inaccusativo
+        # Rilevamento ambiguità inergativo/inaccusativo (soggetto preverbale, no obj)
+        if tipo_verbo is None:
+            iner_ambiguity = detect_inergativo_inaccusativo(tokens)
+            if iner_ambiguity:
+                return jsonify({
+                    "chiedi_iner": True,
+                    "conllu": conllu,
+                    "verbo": iner_ambiguity["verbo"],
+                })
+
+        # Rilevamento ambiguità transitivo/inaccusativo (soggetto postverbale)
         if tipo_verbo is None:
             ambiguity = detect_transitivo_inaccusativo(tokens)
             if ambiguity:
