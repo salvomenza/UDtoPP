@@ -1,4 +1,4 @@
-# ver. 18
+# ver. 19
 """
 svg_render.py — v18
 Frecce di movimento tratteggiate colorate + { } copie + grassetto pronunciati.
@@ -144,6 +144,26 @@ def generate_legend(move_types_used, view_w, y_start):
     return items, (y - y_start + 18)
 
 
+HIGHLIGHT_COLOR = "rgba(255, 220, 50, 0.35)"  # giallo evidenziatore semitrasparente
+HIGHLIGHT_R = 10  # raggio angoli rettangolo evidenziatore
+
+
+def render_highlight(node, elements):
+    """Disegna un rettangolo evidenziatore giallo sotto i nodi nuovi."""
+    if not getattr(node, "is_new", False):
+        for child in node.children:
+            render_highlight(child, elements)
+        return
+    x, y = node._x, node._y
+    w, h = 54, 22
+    elements.append(
+        f'<rect x="{x - w/2:.1f}" y="{y - 16:.1f}" width="{w}" height="{h}" '
+        f'rx="{HIGHLIGHT_R}" fill="{HIGHLIGHT_COLOR}"/>'
+    )
+    for child in node.children:
+        render_highlight(child, elements)
+
+
 def render_node(node, elements):
     x, y = node._x, node._y
     color = node.color or "#2c1e0f"
@@ -248,6 +268,7 @@ def tree_to_svg(root, title=None):
             f'font-size="13" fill="#888" font-style="italic">{title}</text>'
         )
     elements = []
+    render_highlight(root, elements)  # evidenziatori sotto i nodi nuovi
     render_node(root, elements)
     parts.extend(elements)
     parts.extend(arrows)
