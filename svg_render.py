@@ -1,4 +1,4 @@
-# ver. 19
+# ver. 21
 """
 svg_render.py — v18
 Frecce di movimento tratteggiate colorate + { } copie + grassetto pronunciati.
