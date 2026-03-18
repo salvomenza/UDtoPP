@@ -1,4 +1,4 @@
-# ver. 19
+# ver. 21
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -100,12 +100,9 @@ def is_unaccusative(tokens):
     if not has_obj and not has_agent and not has_aux:
         nsubj = next((t for t in tokens
                       if t["deprel"] == "nsubj" and t["head"] == root["id"]), None)
-        if nsubj:
-            # Inaccusativo se: soggetto postverbale E lemma nella lista
-            is_post = nsubj["id"] > root["id"]
-            lemma_ok = root["lemma"] in VERBI_INACCUSATIVI
-            if is_post and lemma_ok:
-                return True
+        # Inaccusativo se lemma nella lista — indipendentemente dall'ordine del soggetto
+        if root["lemma"] in VERBI_INACCUSATIVI:
+            return True
     return False
 
 
@@ -779,6 +776,8 @@ def build_tp(tokens, tipo_verbo=None):
         unaccusative = False
     elif tipo_verbo == "inaccusativo":
         unaccusative = True
+    elif tipo_verbo == "inergativo":
+        unaccusative = False
     else:
         unaccusative = _unacc_auto
 
@@ -949,14 +948,20 @@ def build_tp(tokens, tipo_verbo=None):
             main_complement = sc
 
     elif passive:
+        # Passivo = niente Sv: v°[−ag] è assorbito come tratto su V°[+pass]
+        # Struttura: SV(V°[+pass] + {SD_j}) — soggetto nasce come complemento di V
         v_color = color_for(verb_index)
         subj_color = color_for(subj_index)
 
+        # V°[+pass] con tratto morfologico
         v_node = Node("V", is_head=True, color=v_color)
         v_word = Node(root["form"], word=root["form"],
                       is_head=True, color=v_color)
         v_node.children = [v_word]
+        # tratto [+pass] come label aggiuntiva su V — usiamo etichetta composta
+        v_node.label = "V[+pass]"
 
+        # Traccia soggetto in posizione interna (complemento di V)
         t_subj_inner = Node("SD", index=subj_index, is_trace=True,
                             color=subj_color)
         t_word = Node("t", word="t", index=subj_index, is_trace=True,
@@ -966,16 +971,7 @@ def build_tp(tokens, tipo_verbo=None):
         inner_vp = Node("SV")
         inner_vp.children = [v_node, t_subj_inner]
 
-        v_little = Node("v", is_head=True)
-        v_pass_word = Node("[+pass]", word="[+pass]", is_head=True)
-        v_little.children = [v_pass_word]
-
-        v_prime = Node("v'")
-        v_prime.children = [v_little, inner_vp]
-
-        inner_vp_shell = Node("Sv")
-        inner_vp_shell.children = [v_prime]
-
+        # Aggiunto agentivo (se presente) come sdoppiamento di SV
         if agent_token:
             case_t = next(
                 (t for t in tokens
@@ -984,12 +980,12 @@ def build_tp(tokens, tipo_verbo=None):
             )
             if case_t:
                 pp = build_pp(case_t, agent_token, tokens)
-                outer_vp = Node("Sv")
-                outer_vp.children = [inner_vp_shell, pp]
+                outer_vp = Node("SV")
+                outer_vp.children = [inner_vp, pp]
             else:
-                outer_vp = inner_vp_shell
+                outer_vp = inner_vp
         else:
-            outer_vp = inner_vp_shell
+            outer_vp = inner_vp
 
         if aux_pass:
             asp_p = Node("SAsp")
