@@ -1,4 +1,4 @@
-# ver. 24
+# ver. 25
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -9,10 +9,11 @@ Convenzioni:
 - SD → D → nome proprio/pronome (senza NP)
 - SD → D' → D + SN → N' → [AP spec +] N (per nomi comuni)
 - Passivo: v [+pass], SAsp per participio passivo
-- Aggiunti: sdoppiamento XP → XP + YP
+- Aggiunti: sdoppiamento XP → XP + YP, con livello scelto dall'utente
 - FR con [+wh] per interrogative; movimento wh a spec-CP
 - Ditransitivi: struttura larsoneana (oggetto diretto in spec-VP esterno)
-- obl con PronType=Int → wh; obl senza → aggiunto PP
+- obl con PronType=Int → wh; obl/advmod → utente sceglie argomento/aggiunto
+  e livello di aggiunzione (SV / Sv / ST / SC)
 """
 
 from dataclasses import dataclass, field
@@ -735,7 +736,14 @@ def prune_single_child_bars(node):
 
 # ── Costruzione ST (punto di ingresso) ───────────────────────────────────────
 
-def build_tp(tokens, tipo_verbo=None):
+def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
+    """
+    adjunct_choices: dict {token_id: {"role": "argomento"|"aggiunto",
+                                       "attach": "SV"|"Sv"|"ST"|"SC"}}
+    Prodotto da adjunct_detector.py e passato da app.py dopo la scelta utente.
+    Se None o vuoto, tutti gli obl/advmod vengono trattati come aggiunti a Sv
+    (comportamento identico alla ver. 24).
+    """
     root = next((t for t in tokens if t["deprel"] == "root"), None)
     if not root:
         raise ValueError("Nessun token root trovato")
@@ -816,10 +824,39 @@ def build_tp(tokens, tipo_verbo=None):
     obl_tokens = [t for t in tokens
                   if t["deprel"] == "obl" and t["head"] == root["id"]]
     wh_obl = next((t for t in obl_tokens if is_wh_token(t)), None)
+    # adj_obl_tokens: tutti gli obl non-wh (verranno classificati sotto)
     adj_obl_tokens = [t for t in obl_tokens if not is_wh_token(t)]
 
     advmod_tokens = [t for t in tokens
                      if t["deprel"] == "advmod" and t["head"] == root["id"]]
+
+    # ── Classificazione argomenti/aggiunti per livello (ver. 25) ────────────
+    # adjunct_choices = {token_id: {"role": "argomento"|"aggiunto",
+    #                                "attach": "SV"|"Sv"|"ST"|"SC"}}
+    adjunct_choices = adjunct_choices or {}
+
+    # arg_obl_tokens: obl/advmod classificati come argomenti (per uso futuro)
+    arg_obl_tokens = []
+    # adj_by_attach: aggiunti raggruppati per livello di aggiunzione
+    adj_by_attach = {"SV": [], "Sv": [], "ST": [], "SC": []}
+
+    for t in adj_obl_tokens:
+        choice = adjunct_choices.get(t["id"], {})
+        role   = choice.get("role", "aggiunto")
+        attach = choice.get("attach", "Sv")
+        if role == "argomento":
+            arg_obl_tokens.append(t)
+        else:
+            adj_by_attach.setdefault(attach, []).append(t)
+
+    for t in advmod_tokens:
+        choice = adjunct_choices.get(t["id"], {})
+        role   = choice.get("role", "aggiunto")
+        attach = choice.get("attach", "Sv")
+        if role == "aggiunto":
+            adj_by_attach.setdefault(attach, []).append(t)
+        else:
+            arg_obl_tokens.append(t)
 
     aux_t = next(
         (t for t in tokens
@@ -1123,22 +1160,35 @@ def build_tp(tokens, tipo_verbo=None):
                                 color=color_for(verb_index))]
         main_complement = vp_shell
 
-    # ── Aggiunti SP da obl non-wh ────────────────────────────────────────────
-    for obl_t in adj_obl_tokens:
+    # ── Aggiunti SP/Avv per livello (ver. 25) ───────────────────────────────
+
+    def _build_adjunct_xp(obl_t):
+        """Costruisce il nodo XP per un aggiunto (SP, SAvv o SD)."""
         case_t = next(
             (t for t in tokens
              if t["deprel"] == "case" and t["head"] == obl_t["id"]),
             None
         )
-        adjunct = build_pp(case_t, obl_t, tokens) if case_t else build_dp(obl_t, tokens)
+        if obl_t.get("upos") == "ADV":
+            return build_advp(obl_t)
+        elif case_t:
+            return build_pp(case_t, obl_t, tokens)
+        else:
+            return build_dp(obl_t, tokens)
+
+    # Livello Sv (default — comportamento ver. 24)
+    for obl_t in adj_by_attach.get("Sv", []):
+        xp = _build_adjunct_xp(obl_t)
         outer = Node("Sv")
-        outer.children = [main_complement, adjunct]
+        outer.children = [main_complement, xp]
         main_complement = outer
 
-    # ── Aggiunti avverbiali ──────────────────────────────────────────────────
-    for adv_token in advmod_tokens:
+    # Livello SV (basso — dentro lo shell; per ora sdoppia come Sv,
+    # TODO: integrare dentro build_vp_shell in versione futura)
+    for obl_t in adj_by_attach.get("SV", []):
+        xp = _build_adjunct_xp(obl_t)
         outer = Node("Sv")
-        outer.children = [main_complement, build_advp(adv_token)]
+        outer.children = [main_complement, xp]
         main_complement = outer
 
     # ── Assembla T' e ST ────────────────────────────────────────────────────
@@ -1148,10 +1198,31 @@ def build_tp(tokens, tipo_verbo=None):
     tp = Node("ST")
     tp.children = [subj_dp, t_prime] if subj_dp else [t_prime]
 
+    # Livello ST (sopra il soggetto)
+    for obl_t in adj_by_attach.get("ST", []):
+        xp = _build_adjunct_xp(obl_t)
+        outer_st = Node("ST")
+        outer_st.children = [tp, xp]
+        tp = outer_st
+
     if wh_xp is not None:
-        result = prune_single_child_bars(wrap_cp(tp, wh_xp))
+        # Livello SC (sopra SC wh, se presente)
+        pre_cp = tp
+        for obl_t in adj_by_attach.get("SC", []):
+            xp = _build_adjunct_xp(obl_t)
+            outer_sc = Node("SC")
+            outer_sc.children = [pre_cp, xp]
+            pre_cp = outer_sc
+        result = prune_single_child_bars(wrap_cp(pre_cp, wh_xp))
         annotate_movements(result)
         return result
+
+    # Livello SC (senza movimento wh)
+    for obl_t in adj_by_attach.get("SC", []):
+        xp = _build_adjunct_xp(obl_t)
+        outer_sc = Node("SC")
+        outer_sc.children = [tp, xp]
+        tp = outer_sc
 
     result = prune_single_child_bars(tp)
     annotate_movements(result)
