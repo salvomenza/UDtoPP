@@ -1,4 +1,4 @@
-# ver. 24
+# ver. 25
 """
 app.py
 Interfaccia web Flask per il generatore di alberi chomskiani.
@@ -9,13 +9,14 @@ import requests
 import json
 from datetime import datetime
 
-VERSION = "0.24"
+VERSION = "0.25"
 BUILD_DATE = datetime.now().strftime("%d/%m/%Y")
 BUILD_TIME = datetime.now().strftime("%H:%M")
 from test_conllu import parse_conllu
 from ud_to_chomsky import build_tp
 from svg_render import tree_to_svg
 from step_generator import generate_steps
+from adjunct_detector import detect_ambiguous_adjuncts
 
 app = Flask(__name__)
 
@@ -426,6 +427,32 @@ HTML = """
       font-size: 0.78em;
       color: #a89880;
     }
+
+    /* ── Modale aggiunti (ver. 25) ── */
+    .adj-card {
+      border: 1px solid #d4c9b0;
+      border-radius: 6px;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+      background: #fdfaf5;
+    }
+
+    .adj-card-form { font-size: 1em; color: #2c1e0f; margin-bottom: 4px; }
+    .adj-card-hint { font-size: 0.82em; color: #7a6a5a; margin-bottom: 12px; font-style: italic; }
+    .adj-card-label { font-size: 0.88em; color: #5a4a3a; font-weight: bold; display: block; margin-bottom: 6px; }
+
+    .adj-radio-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; }
+    .adj-radio-row label { font-size: 0.88em; cursor: pointer; }
+
+    .adj-attach-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .adj-attach-row label {
+      font-size: 0.85em; cursor: pointer;
+      background: #f0e8d8; border: 1px solid #c8b99a;
+      border-radius: 4px; padding: 4px 10px;
+    }
+    .adj-attach-note {
+      font-size: 0.78em; color: #a89880; margin-top: 6px; font-style: italic;
+    }
   </style>
 </head>
 <body>
@@ -511,6 +538,32 @@ HTML = """
     </div>
   </div>
 
+  <!-- Dialogo aggiunti (ver. 25) -->
+  <div id="modal-aggiunti" style="display:none; position:fixed; top:0; left:0; width:100%;
+       height:100%; background:rgba(0,0,0,0.5); z-index:1000;
+       align-items:flex-start; justify-content:center; overflow-y:auto; padding: 40px 0;">
+    <div style="background:#fff8f0; border-radius:8px; padding:28px 32px;
+         max-width:560px; width:92%; box-shadow:0 4px 24px rgba(0,0,0,0.2);
+         font-family:Georgia,serif;">
+      <p style="margin:0 0 6px; font-size:1.05em; color:#2c1e0f; font-weight:bold;">
+        Argomenti o aggiunti?
+      </p>
+      <p style="margin:0 0 20px; font-size:0.85em; color:#5a4a3a; line-height:1.5;">
+        UDPipe non distingue sempre tra complementi argomento (obbligatori) e
+        aggiunti (facoltativi). Per ciascun sintagma indica la tua analisi e,
+        se è un aggiunto, il livello di aggiunzione.
+      </p>
+      <div id="aggiunti-lista"></div>
+      <div style="margin-top:20px; text-align:right;">
+        <button onclick="confermAggiunti()"
+          style="padding:10px 28px; background:#2c1e0f; color:#fff; border:none;
+                 border-radius:5px; font-size:1em; font-family:Georgia,serif; cursor:pointer;">
+          Conferma e genera
+        </button>
+      </div>
+    </div>
+  </div>
+
   <div class="tree-section" id="tree-section">
     <h2 id="tree-title"></h2>
     <div class="tab-row">
@@ -565,6 +618,8 @@ HTML = """
   let currentFrase = "";
   let currentUDSVG = "";
   let currentTab = "chomsky";
+  let _adjunctChoices = null;       // ver. 25: scelte argomento/aggiunto
+  let _pendingAggiunti = [];        // ver. 25: lista sintagmi ambigui in attesa
 
   function switchTab(tab) {
     currentTab = tab;
@@ -594,7 +649,7 @@ HTML = """
   let currentTipoVerbo = null;
   let _pendingIner = null;
 
-  async function genera(tipoVerbo) {
+  async function genera(tipoVerbo, adjunctChoices) {
     const frase = document.getElementById("frase").value.trim();
     if (!frase) return;
     currentFrase = frase;
@@ -608,6 +663,7 @@ HTML = """
       const payload = {frase: frase};
       if (tipoVerbo) payload.tipo_verbo = tipoVerbo;
       if (_pendingConllu) payload.conllu = _pendingConllu;
+      if (adjunctChoices) payload.adjunct_choices = adjunctChoices;  // ver. 25
 
       const resp = await fetch("/analizza", {
         method: "POST",
@@ -641,7 +697,16 @@ HTML = """
         return;
       }
 
+      // ver. 25: il server chiede di classificare aggiunti
+      if (data.chiedi_aggiunti) {
+        _pendingConllu = data.conllu;
+        setStatus("");
+        mostraModaleAggiunti(data.aggiunti);
+        return;
+      }
+
       _pendingConllu = null;
+      _adjunctChoices = adjunctChoices || null;  // ver. 25: salva per i passi
       setStatus("");
       currentSVG = data.svg;
       currentUDSVG = data.ud_svg || "";
@@ -720,10 +785,12 @@ HTML = """
     const conllu = document.getElementById("conllu-text").value;
     const frase = currentFrase;
     try {
+      const payload = {conllu: conllu, frase: frase, tipo_verbo: currentTipoVerbo};
+      if (_adjunctChoices) payload.adjunct_choices = _adjunctChoices;  // ver. 25
       const resp = await fetch("/passi", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({conllu: conllu, frase: frase, tipo_verbo: currentTipoVerbo})
+        body: JSON.stringify(payload)
       });
       const data = await resp.json();
       if (data.error) { setStatus("Errore passi: " + data.error, true); return; }
@@ -770,6 +837,80 @@ HTML = """
     a.download = currentFrase.replace(/ /g, "_") + ".svg";
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  // ── Modale aggiunti (ver. 25) ─────────────────────────────────────────────
+
+  function mostraModaleAggiunti(aggiunti) {
+    _pendingAggiunti = aggiunti;
+    const lista = document.getElementById("aggiunti-lista");
+    lista.innerHTML = "";
+
+    aggiunti.forEach((a, i) => {
+      const eurLabel = a.heuristic === "argomento"
+        ? '<span style="color:#3a7a3a">⟶ probabilmente argomento</span>'
+        : '<span style="color:#7a5a3a">⟶ probabilmente aggiunto</span>';
+
+      const isAdj = a.heuristic === "aggiunto";
+      const card = document.createElement("div");
+      card.className = "adj-card";
+      card.innerHTML = `
+        <div class="adj-card-form">
+          <strong>«${a.form}»</strong>
+          <span style="font-size:0.78em;color:#a89880;margin-left:6px;">(${a.deprel})</span>
+        </div>
+        <div class="adj-card-hint">${a.heuristic_reason} ${eurLabel}</div>
+
+        <span class="adj-card-label">Ruolo sintattico:</span>
+        <div class="adj-radio-row">
+          <label>
+            <input type="radio" name="role_${i}" value="argomento"
+              ${!isAdj ? "checked" : ""}
+              onchange="aggiornaAttach(${i})"> argomento
+          </label>
+          <label>
+            <input type="radio" name="role_${i}" value="aggiunto"
+              ${isAdj ? "checked" : ""}
+              onchange="aggiornaAttach(${i})"> aggiunto
+          </label>
+        </div>
+
+        <div id="attach-row-${i}" style="display:${isAdj ? 'block' : 'none'};">
+          <span class="adj-card-label">Livello di aggiunzione:</span>
+          <div class="adj-attach-row">
+            ${["SV","Sv","ST","SC"].map(lv =>
+              `<label><input type="radio" name="attach_${i}" value="${lv}"
+                ${lv === "Sv" ? "checked" : ""}> ${lv}</label>`
+            ).join("")}
+          </div>
+          <div class="adj-attach-note">
+            SV = basso (dentro lo shell) · Sv = medio (livello agentivo) ·
+            ST = alto (livello temporale) · SC = massimo (sopra C)
+          </div>
+        </div>
+      `;
+      lista.appendChild(card);
+    });
+
+    document.getElementById("modal-aggiunti").style.display = "flex";
+  }
+
+  function aggiornaAttach(i) {
+    const role = document.querySelector(`input[name="role_${i}"]:checked`)?.value;
+    const row = document.getElementById(`attach-row-${i}`);
+    if (row) row.style.display = (role === "aggiunto") ? "block" : "none";
+  }
+
+  function confermAggiunti() {
+    document.getElementById("modal-aggiunti").style.display = "none";
+    const choices = {};
+    _pendingAggiunti.forEach((a, i) => {
+      const role   = document.querySelector(`input[name="role_${i}"]:checked`)?.value   || a.heuristic;
+      const attach = document.querySelector(`input[name="attach_${i}"]:checked`)?.value || "Sv";
+      choices[a.token_id] = {role, attach};
+    });
+    _pendingAggiunti = [];
+    genera(currentTipoVerbo, choices);
   }
 </script>
 </body>
@@ -980,6 +1121,7 @@ def analizza():
     frase = data.get("frase", "").strip()
     tipo_verbo = data.get("tipo_verbo", None)   # "transitivo" | "inaccusativo" | None
     conllu_pre = data.get("conllu", None)        # CoNLL-U già calcolato (secondo round)
+    adjunct_choices_raw = data.get("adjunct_choices", None)  # ver. 25
     if not frase:
         return jsonify({"error": "Frase vuota"})
 
@@ -1044,7 +1186,22 @@ def analizza():
                     "sd": ambiguity["sd"],
                 })
 
-        tree = build_tp(tokens, tipo_verbo=tipo_verbo)
+        # ── ver. 25: Rilevamento aggiunti ambigui ───────────────────────────
+        if adjunct_choices_raw is None:
+            # Prima volta: rilevamento automatico
+            ambiguous = detect_ambiguous_adjuncts(tokens)
+            if ambiguous:
+                return jsonify({
+                    "chiedi_aggiunti": True,
+                    "aggiunti": ambiguous,
+                    "conllu": conllu,
+                })
+            adjunct_choices = {}
+        else:
+            # Seconda volta: l'utente ha già scelto
+            adjunct_choices = {int(k): v for k, v in adjunct_choices_raw.items()}
+
+        tree = build_tp(tokens, tipo_verbo=tipo_verbo, adjunct_choices=adjunct_choices)
         svg = tree_to_svg(tree, title=frase, animate=True)
         # Usa SVG nativo UDPipe se disponibile, altrimenti fallback artigianale
         ud_svg = ud_svg_native if ud_svg_native else build_ud_svg(tokens)
@@ -1076,6 +1233,8 @@ def passi():
     conllu = data.get("conllu", "")
     frase = data.get("frase", "")
     tipo_verbo = data.get("tipo_verbo", None)
+    adjunct_choices_raw = data.get("adjunct_choices", {})  # ver. 25
+    adjunct_choices = {int(k): v for k, v in adjunct_choices_raw.items()}
     try:
         tokens = parse_conllu(conllu)
         # Applica correzione tipo_verbo come in /analizza
@@ -1087,7 +1246,8 @@ def passi():
                             and t["id"] > root["id"]):
                         t["deprel"] = "obj"
                         break
-        steps = generate_steps(tokens, tipo_verbo=tipo_verbo)
+        steps = generate_steps(tokens, tipo_verbo=tipo_verbo,
+                               adjunct_choices=adjunct_choices)  # ver. 25
         result = []
         for s in steps:
             if s["tree"].word == "…":
