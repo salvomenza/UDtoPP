@@ -1,4 +1,4 @@
-# ver. 26.1
+# ver. 26.2
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -348,12 +348,19 @@ def build_pro_node(pro_type, index=None, color=None):
     """
     Costruisce un nodo SD per pro/PRO.
     pro_type: 'pro', 'pro_espl', 'PRO', 'PRO_arb'
+    pro/PRO sono elementi silenziosi: is_pronounced=False.
+    Il movement_type viene assegnato qui direttamente perché
+    annotate_movements non deve trattarli come nodi pronunciati.
     """
     dp_color = color or (color_for(index) if index else "#5a4a3a")
     dp = Node("SD", index=index, color=dp_color)
+    # Solo pro referenziale (non pro_espl, PRO_arb) si muove da spec-Sv a spec-ST
+    if index is not None and pro_type == "pro":
+        dp.movement_type = "soggetto"
     d = Node("D", is_head=True, color=dp_color)
     word = Node(pro_type, word=pro_type, index=index,
-                is_head=True, color=dp_color, is_trace=False)
+                is_head=True, color=dp_color, is_trace=False,
+                is_pronounced=False)  # silenzioso: non ha forma fonetica
     d.children = [word]
     dp.children = [d]
     return dp
@@ -1364,15 +1371,19 @@ def annotate_movements(node, parent_label=None):
                 node.movement_type = "sintagmatico"
             node.is_trace = False
         elif not node.is_copy:
-            node.is_pronounced = True
-            # Assegna movement_type anche al nodo di arrivo (pronunciato con indice)
-            idx = node.index or ""
-            if idx == "j":
-                node.movement_type = "soggetto"
-            elif idx == "i":
-                node.movement_type = "verbo"
-            elif idx == "k":
-                node.movement_type = "sintagmatico"
+            # Nodi silenziosi (pro, PRO, ecc.): is_pronounced rimane False,
+            # movement_type già impostato in build_pro_node se necessario
+            if node.is_pronounced is not False:
+                node.is_pronounced = True
+            # Assegna movement_type solo ai nodi pronunciati con indice
+            if node.is_pronounced:
+                idx = node.index or ""
+                if idx == "j":
+                    node.movement_type = "soggetto"
+                elif idx == "i":
+                    node.movement_type = "verbo"
+                elif idx == "k":
+                    node.movement_type = "sintagmatico"
     else:
         # Nodo strutturale con indice: propaga movement_type
         # ma NON per pro_espl (non si muove — è già in posizione finale)
