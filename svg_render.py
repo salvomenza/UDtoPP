@@ -1,4 +1,4 @@
-# ver. 22b
+# ver. 26.2
 """
 svg_render.py — v22
 Animazioni SVG:
@@ -74,13 +74,36 @@ def max_y(node):
 
 
 def collect_nodes(node, registry):
-    if getattr(node, "movement_type", None) and node.index:
-        key = (node.index, node.movement_type)
-        registry[key].append({
-            "x": node._x, "y": node._y,
-            "is_copy": node.is_copy,
-            "is_pronounced": getattr(node, "is_pronounced", False),
-        })
+    mtype = getattr(node, "movement_type", None)
+    if mtype and node.index:
+        key = (node.index, mtype)
+        # Movimento sintagmatico (soggetto, sintagmatico):
+        #   punto di arrivo = nodo XP (strutturale, word is None)
+        #   punto di partenza = traccia (is_copy=True, word is not None)
+        # Movimento di testa (verbo, testa):
+        #   sia partenza che arrivo = nodi terminali (word is not None)
+        is_sintagmatico = mtype in ("soggetto", "sintagmatico")
+        is_testa = mtype in ("verbo", "testa")
+
+        if is_sintagmatico:
+            # Includi solo: XP strutturali (word is None) oppure tracce (is_copy)
+            if node.word is None or node.is_copy:
+                registry[key].append({
+                    "x": node._x, "y": node._y,
+                    "is_copy": node.is_copy,
+                    "is_pronounced": getattr(node, "is_pronounced", False),
+                    "is_xp": node.word is None,
+                })
+        elif is_testa:
+            # Includi solo terminali (word is not None)
+            if node.word is not None:
+                registry[key].append({
+                    "x": node._x, "y": node._y,
+                    "is_copy": node.is_copy,
+                    "is_pronounced": getattr(node, "is_pronounced", False),
+                    "is_xp": False,
+                })
+
     for child in node.children:
         collect_nodes(child, registry)
 
@@ -273,12 +296,29 @@ def render_node(node, elements, animate=False, delay_counter=None):
                     f'{node.index}</text>'
                 )
         else:
-            weight = "bold" if getattr(node, "is_pronounced", False) else "normal"
-            elements.append(
-                f'<text x="{x:.1f}" y="{y:.1f}" text-anchor="middle" '
-                f'font-size="{TERM_FONT}" font-style="italic" '
-                f'font-weight="{weight}" fill="{color}">{node.word}</text>'
-            )
+            is_silent = node.word in ("pro", "PRO", "pro_espl", "PRO_arb") \
+                        and not getattr(node, "is_pronounced", True)
+            if is_silent:
+                # Elemento silenzioso: corsivo, colore attenuato, non grassetto
+                elements.append(
+                    f'<text x="{x:.1f}" y="{y:.1f}" text-anchor="middle" '
+                    f'font-size="{TERM_FONT}" font-style="italic" '
+                    f'font-weight="normal" fill="{color}" opacity="0.75">'
+                    f'{node.word}</text>'
+                )
+                if node.index:
+                    elements.append(
+                        f'<text x="{x+6:.1f}" y="{y+8:.1f}" text-anchor="start" '
+                        f'font-size="{INDEX_FONT}" font-style="italic" fill="{color}">'
+                        f'{node.index}</text>'
+                    )
+            else:
+                weight = "bold" if getattr(node, "is_pronounced", False) else "normal"
+                elements.append(
+                    f'<text x="{x:.1f}" y="{y:.1f}" text-anchor="middle" '
+                    f'font-size="{TERM_FONT}" font-style="italic" '
+                    f'font-weight="{weight}" fill="{color}">{node.word}</text>'
+                )
     else:
         label = node.label
         elements.append(
