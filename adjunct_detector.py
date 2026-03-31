@@ -1,4 +1,4 @@
-# ver. 25
+# ver. 26
 """
 adjunct_detector.py
 
@@ -147,6 +147,20 @@ def _heuristic(root_lemma: str, token: dict, tokens: list[dict],
     )
 
 
+def _sn_candidates(tokens: list[dict]) -> list[dict]:
+    """
+    Restituisce la lista dei token nominali della frase che possono
+    fungere da testa di SN a cui agganciare un aggiunto nominale.
+    Criteri: upos NOUN/PROPN/PRON, esclusa la radice.
+    """
+    root = next((t for t in tokens if t["deprel"] == "root"), None)
+    root_id = root["id"] if root else -1
+    return [
+        t for t in tokens
+        if t["upos"] in ("NOUN", "PROPN", "PRON") and t["id"] != root_id
+    ]
+
+
 def detect_ambiguous_adjuncts(tokens: list[dict],
                                frase: str = "") -> list[dict]:
     root = next((t for t in tokens if t["deprel"] == "root"), None)
@@ -156,6 +170,7 @@ def detect_ambiguous_adjuncts(tokens: list[dict],
     from ud_to_chomsky import is_wh_token
 
     ner = _ner_entities(frase) if frase else {}
+    candidates = _sn_candidates(tokens)  # nomi a cui si può agganciare come SN
     ambiguous = []
 
     for t in tokens:
@@ -168,6 +183,10 @@ def detect_ambiguous_adjuncts(tokens: list[dict],
             if is_wh_token(t):
                 continue
             hint, reason = _heuristic(root["lemma"], t, tokens, ner)
+            # Suggerimento SN: preposizioni come "senza", "con", "di"
+            # introducono spesso modificatori nominali
+            prep = _get_case_prep(t["id"], tokens)
+            sn_hint = prep in {"senza", "con", "di", "da", "per"} if prep else False
             ambiguous.append({
                 "token_id":         t["id"],
                 "form":             _surface_form(t["id"], tokens),
@@ -176,6 +195,12 @@ def detect_ambiguous_adjuncts(tokens: list[dict],
                 "heuristic_reason": reason,
                 "role":             None,
                 "attach":           None,
+                "sn_target":        None,   # token_id del nome a cui agganciarsi
+                "sn_candidates":    [       # nomi disponibili come testa SN
+                    {"token_id": c["id"], "form": c["form"]}
+                    for c in candidates
+                ],
+                "sn_hint":          sn_hint,  # True → suggerisci SN come opzione
             })
 
         elif deprel == "advmod":
@@ -187,6 +212,12 @@ def detect_ambiguous_adjuncts(tokens: list[dict],
                 "heuristic_reason": "gli avverbi modificatori sono quasi sempre aggiunti",
                 "role":             None,
                 "attach":           None,
+                "sn_target":        None,
+                "sn_candidates":    [
+                    {"token_id": c["id"], "form": c["form"]}
+                    for c in candidates
+                ],
+                "sn_hint":          False,
             })
 
     return ambiguous
@@ -199,18 +230,24 @@ def apply_adjunct_choices(adjuncts: list[dict],
         a = dict(a)
         tid = a["token_id"]
         if tid in choices:
-            a["role"]   = choices[tid].get("role",   a["heuristic"])
-            a["attach"] = choices[tid].get("attach", "Sv")
+            a["role"]      = choices[tid].get("role",      a["heuristic"])
+            a["attach"]    = choices[tid].get("attach",    "Sv")
+            a["sn_target"] = choices[tid].get("sn_target", None)
         else:
-            a["role"]   = a["heuristic"]
-            a["attach"] = "Sv"
+            a["role"]      = a["heuristic"]
+            a["attach"]    = "Sv"
+            a["sn_target"] = None
         result.append(a)
     return result
 
 
 def adjuncts_as_dict(adjuncts_with_choices: list[dict]) -> dict[int, dict]:
     return {
-        a["token_id"]: {"role": a["role"], "attach": a["attach"]}
+        a["token_id"]: {
+            "role":      a["role"],
+            "attach":    a["attach"],
+            "sn_target": a.get("sn_target"),
+        }
         for a in adjuncts_with_choices
         if a["role"] is not None
     }
