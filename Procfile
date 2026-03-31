@@ -1,1 +1,1 @@
-web: gunicorn app:app --bind 0.0.0.0:$PORT
+web: python -m spacy download it_core_news_md && gunicorn app:app
