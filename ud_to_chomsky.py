@@ -1,4 +1,4 @@
-# ver. 26
+# ver. 26.1
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -1125,18 +1125,25 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
                                 is_head=True, color=v_color)]
 
     elif aux_t:
-        # Oggetto: se c'è clitico acc, usa traccia t_k; altrimenti obj_token
         eff_obj = None
         if has_clitic_obj:
-            # Token fittizio per la traccia del clitico
             eff_obj = {"id": -1, "form": f"t_{cl_index}", "lemma": "t",
                        "upos": "PRON", "feats": f"Index={cl_index}",
                        "head": root["id"], "deprel": "obj"}
         elif obj_token:
             eff_obj = obj_token
 
+        # Fix 26.1: se il soggetto è pro/PRO silenzioso, creiamo un token
+        # fittizio con id negativo così build_vp_shell genera t_j in spec-Sv.
+        # subj_dp (il nodo pro pieno) andrà in spec-ST come di consueto.
+        eff_subj = subj_token
+        if eff_subj is None and silent_subj_node is not None:
+            eff_subj = {"id": -3, "form": "pro", "lemma": "pro",
+                        "upos": "PRON", "feats": "", "head": root["id"],
+                        "deprel": "nsubj"}
+
         vp_shell = build_vp_shell(
-            root, tokens, subj_token, eff_obj,
+            root, tokens, eff_subj, eff_obj,
             verb_index=verb_index, subj_index=subj_index,
             wh_index=wh_index if wh_obl else None,
             wh_case_token=wh_case_token,
@@ -1149,7 +1156,15 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
         )
         t_node = Node("T", is_head=True)
         t_node.children = [Node(aux_t["form"], word=aux_t["form"], is_head=True)]
-        main_complement = vp_shell
+
+        # Fix 26.1 — Bug 3: avvolgi vp_shell in SAsp per il participio passato
+        asp_p = Node("SAsp")
+        asp = Node("Asp", is_head=True)
+        asp_word = Node(root["form"], word=root["form"],
+                        index=verb_index, is_head=True, color=color_for(verb_index))
+        asp.children = [asp_word]
+        asp_p.children = [asp, vp_shell]
+        main_complement = asp_p
 
     else:
         eff_obj = None
@@ -1160,8 +1175,15 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
         elif obj_token:
             eff_obj = obj_token
 
+        # Fix 26.1: token fittizio per pro silenzioso (vedi ramo elif aux_t)
+        eff_subj = subj_token
+        if eff_subj is None and silent_subj_node is not None:
+            eff_subj = {"id": -3, "form": "pro", "lemma": "pro",
+                        "upos": "PRON", "feats": "", "head": root["id"],
+                        "deprel": "nsubj"}
+
         vp_shell = build_vp_shell(
-            root, tokens, subj_token, eff_obj,
+            root, tokens, eff_subj, eff_obj,
             verb_index=verb_index, subj_index=subj_index,
             wh_index=wh_index if wh_obl else None,
             wh_case_token=wh_case_token,
@@ -1177,7 +1199,7 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
                                 color=color_for(verb_index))]
         main_complement = vp_shell
 
-    # ── Argomenti obl (PP argomento, es. "parlare a qn") — ver. 26 ──────────
+    # ── Argomenti obl (PP argomento, es. "parlare a qn") — ver. 26.1 ─────────
     for obl_t in arg_obl_tokens:
         case_t = next(
             (t for t in tokens
@@ -1185,19 +1207,21 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
             None
         )
         pp = build_pp(case_t, obl_t, tokens) if case_t else build_dp(obl_t, tokens)
-        def _insert_pp_in_sv(node, pp_node):
+
+        def _find_innermost_sv(node):
+            """Restituisce il nodo SV più profondo nell'albero."""
+            best = None
             if node.label == "SV":
-                sv_child = next((c for c in node.children if c.label == "SV"), None)
-                if sv_child:
-                    _insert_pp_in_sv(sv_child, pp_node)
-                else:
-                    node.children.append(pp_node)
-            else:
-                for child in node.children:
-                    if child.label in ("SV", "Sv", "SAsp"):
-                        _insert_pp_in_sv(child, pp_node)
-                        break
-        _insert_pp_in_sv(main_complement, pp)
+                best = node
+            for child in node.children:
+                inner = _find_innermost_sv(child)
+                if inner is not None:
+                    best = inner
+            return best
+
+        innermost = _find_innermost_sv(main_complement)
+        if innermost is not None:
+            innermost.children.append(pp)
 
     # ── Aggiunti SP/Avv per livello (ver. 26) ───────────────────────────────
 
@@ -1217,24 +1241,24 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
 
     def _attach_to_sn(root_node, sn_target_id, xp):
         """
-        Cerca il SN che contiene il token sn_target_id e lo sdoppia:
-          SN → SN + XP
+        Cerca il SN che contiene il token sn_target_id come discendente
+        e lo sdoppia: SN → SN + XP.
         Restituisce True se trovato e modificato.
         """
-        def _sn_contains_id(node, tid):
-            tok = next((t for t in tokens if t["id"] == tid), None)
-            if tok is None:
-                return False
-            for child in node.children:
-                if child.word == tok["form"]:
-                    return True
-                if _sn_contains_id(child, tid):
-                    return True
+        target_tok = next((t for t in tokens if t["id"] == sn_target_id), None)
+        if target_tok is None:
             return False
+        target_form = target_tok["form"]
+
+        def _node_contains_form(node, form):
+            """True se il sottoalbero contiene un nodo foglia con word==form."""
+            if node.word == form:
+                return True
+            return any(_node_contains_form(c, form) for c in node.children)
 
         def _find_and_attach(node):
             for i, child in enumerate(node.children):
-                if child.label == "SN" and _sn_contains_id(child, sn_target_id):
+                if child.label == "SN" and _node_contains_form(child, target_form):
                     outer = Node("SN", color="#2c1e0f")
                     outer.children = [child, xp]
                     node.children[i] = outer
