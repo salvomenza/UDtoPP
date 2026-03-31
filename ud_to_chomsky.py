@@ -1,4 +1,4 @@
-# ver. 26.2
+# ver. 26.3
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -648,8 +648,9 @@ def build_vp_shell(verb_token, tokens, subj_token, obj_token,
         v_word = Node(v_label, word=v_label, index=cl_index,
                       is_head=True, color=cl_color)
     elif has_aux:
-        v_word = Node(verb_token["form"], word=verb_token["form"],
-                      index=verb_index, is_head=True, color=v_color)
+        # Il participio sale a Asp, non a v°: v° contiene la traccia t_i
+        v_word = Node("t", word="t", index=verb_index, is_trace=True,
+                      is_head=True, color=v_color)
     else:
         v_word = Node("t", word="t", index=verb_index, is_trace=True,
                       is_head=True, color=v_color)
