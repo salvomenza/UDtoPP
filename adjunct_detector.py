@@ -1,4 +1,4 @@
-# ver. 26.1
+# ver. 26.2
 """
 adjunct_detector.py
 
@@ -18,8 +18,9 @@ import functools
 def _get_nlp():
     try:
         import spacy
+        # Manteniamo morphologizer per Animacy; disabilitiamo solo parser e lemmatizer
         return spacy.load("it_core_news_md",
-                          disable=["parser", "tagger", "morphologizer", "lemmatizer"])
+                          disable=["parser", "lemmatizer"])
     except Exception:
         return None
 
@@ -30,6 +31,23 @@ def _ner_entities(frase: str) -> dict[str, str]:
         return {}
     doc = nlp(frase)
     return {ent.text.lower(): ent.label_ for ent in doc.ents}
+
+
+def _animacy_map(frase: str) -> dict[str, bool]:
+    """
+    Restituisce {forma_lower: True} per i token con Animacy=Anim
+    riconosciuti da spaCy nella frase.
+    """
+    nlp = _get_nlp()
+    if nlp is None:
+        return {}
+    doc = nlp(frase)
+    result = {}
+    for token in doc:
+        animacy = token.morph.get("Animacy")
+        if animacy and "Anim" in animacy:
+            result[token.text.lower()] = True
+    return result
 
 
 _PREP_ARG = {
@@ -94,7 +112,8 @@ def _surface_form(token_id: int, tokens: list[dict]) -> str:
 
 
 def _heuristic(root_lemma: str, token: dict, tokens: list[dict],
-               ner: dict[str, str]) -> tuple[str, str]:
+               ner: dict[str, str],
+               animacy: dict[str, bool] | None = None) -> tuple[str, str]:
     prep       = _get_case_prep(token["id"], tokens)
     upos       = token.get("upos", "")
     form_lower = token["form"].lower()
@@ -111,18 +130,26 @@ def _heuristic(root_lemma: str, token: dict, tokens: list[dict],
     if prep in _PREP_ALMOST_ALWAYS_ADJ:
         return "aggiunto", f"la preposizione '{prep}' introduce quasi sempre un aggiunto"
 
-    # 3. NER per preposizioni locative ambigue
-    if prep in _PREP_LOC_AMBIGUOUS and ner:
+    # 3. NER + Animacy per preposizioni locative ambigue
+    if prep in _PREP_LOC_AMBIGUOUS:
         surface   = _surface_form(token["id"], tokens).lower()
-        ner_label = ner.get(form_lower) or ner.get(surface)
+        # 3a. NER: luogo → aggiunto locativo
+        ner_label = ner.get(form_lower) or ner.get(surface) if ner else None
         if ner_label in _NER_LOC:
             return "aggiunto", (
                 f"'{token['form']}' e' riconosciuto come luogo ({ner_label}): "
                 f"con '{prep}' introduce quasi certamente un locativo aggiunto"
             )
+        # 3b. NER: persona/org → dativo argomento
         if ner_label in _NER_DATIVE:
             return "argomento", (
                 f"'{token['form']}' e' riconosciuto come persona o organizzazione ({ner_label}): "
+                f"con '{prep}' introduce probabilmente un dativo argomento"
+            )
+        # 3c. Animacy: nome comune animato → dativo argomento
+        if animacy and animacy.get(form_lower):
+            return "argomento", (
+                f"'{token['form']}' e' un'entita' animata: "
                 f"con '{prep}' introduce probabilmente un dativo argomento"
             )
 
@@ -182,7 +209,8 @@ def detect_ambiguous_adjuncts(tokens: list[dict],
 
     from ud_to_chomsky import is_wh_token
 
-    ner = _ner_entities(frase) if frase else {}
+    ner     = _ner_entities(frase) if frase else {}
+    animacy = _animacy_map(frase)  if frase else {}
     ambiguous = []
 
     for t in tokens:
@@ -194,7 +222,7 @@ def detect_ambiguous_adjuncts(tokens: list[dict],
         if deprel == "obl":
             if is_wh_token(t):
                 continue
-            hint, reason = _heuristic(root["lemma"], t, tokens, ner)
+            hint, reason = _heuristic(root["lemma"], t, tokens, ner, animacy)
             prep = _get_case_prep(t["id"], tokens)
             sn_hint = prep in {"senza", "con", "di", "da", "per"} if prep else False
             # Escludi il sottoalbero del token stesso dai candidati SN
