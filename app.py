@@ -1,4 +1,4 @@
-# ver. 25
+# ver. 26
 """
 app.py
 Interfaccia web Flask per il generatore di alberi chomskiani.
@@ -9,7 +9,7 @@ import requests
 import json
 from datetime import datetime
 
-VERSION = "0.25"
+VERSION = "0.26"
 BUILD_DATE = datetime.now().strftime("%d/%m/%Y")
 BUILD_TIME = datetime.now().strftime("%H:%M")
 from test_conllu import parse_conllu
@@ -538,7 +538,7 @@ HTML = """
     </div>
   </div>
 
-  <!-- Dialogo aggiunti (ver. 25) -->
+  <!-- Dialogo aggiunti (ver. 26) -->
   <div id="modal-aggiunti" style="display:none; position:fixed; top:0; left:0; width:100%;
        height:100%; background:rgba(0,0,0,0.5); z-index:1000;
        align-items:flex-start; justify-content:center; overflow-y:auto; padding: 40px 0;">
@@ -551,7 +551,9 @@ HTML = """
       <p style="margin:0 0 20px; font-size:0.85em; color:#5a4a3a; line-height:1.5;">
         UDPipe non distingue sempre tra complementi argomento (obbligatori) e
         aggiunti (facoltativi). Per ciascun sintagma indica la tua analisi e,
-        se è un aggiunto, il livello di aggiunzione.
+        se è un aggiunto, il livello di aggiunzione. Il livello <b>SN</b> indica
+        un aggiunto nominale che descrive una caratteristica specifica dell'entità
+        riferita da un sintagma nominale della frase.
       </p>
       <div id="aggiunti-lista"></div>
       <div style="margin-top:20px; text-align:right;">
@@ -839,7 +841,7 @@ HTML = """
     URL.revokeObjectURL(url);
   }
 
-  // ── Modale aggiunti (ver. 25) ─────────────────────────────────────────────
+  // ── Modale aggiunti (ver. 26) ─────────────────────────────────────────────
 
   function mostraModaleAggiunti(aggiunti) {
     _pendingAggiunti = aggiunti;
@@ -852,6 +854,19 @@ HTML = """
         : '<span style="color:#7a5a3a">⟶ probabilmente aggiunto</span>';
 
       const isAdj = a.heuristic === "aggiunto";
+
+      // Opzioni di livello: SV Sv ST SC + SN (se ci sono nomi disponibili)
+      const hasCandidates = a.sn_candidates && a.sn_candidates.length > 0;
+      const livelli = ["SV", "Sv", "ST", "SC"];
+      if (hasCandidates) livelli.push("SN");
+
+      // Costruisce le opzioni del selettore nome per SN
+      const snOptions = hasCandidates
+        ? a.sn_candidates.map(c =>
+            `<option value="${c.token_id}">${c.form}</option>`
+          ).join("")
+        : "";
+
       const card = document.createElement("div");
       card.className = "adj-card";
       card.innerHTML = `
@@ -878,15 +893,29 @@ HTML = """
         <div id="attach-row-${i}" style="display:${isAdj ? 'block' : 'none'};">
           <span class="adj-card-label">Livello di aggiunzione:</span>
           <div class="adj-attach-row">
-            ${["SV","Sv","ST","SC"].map(lv =>
+            ${livelli.map(lv =>
               `<label><input type="radio" name="attach_${i}" value="${lv}"
-                ${lv === "Sv" ? "checked" : ""}> ${lv}</label>`
+                ${lv === (a.sn_hint ? "SN" : "Sv") ? "checked" : ""}
+                onchange="aggiornaSnSelector(${i})"> ${lv}</label>`
             ).join("")}
           </div>
           <div class="adj-attach-note">
             SV = basso (dentro lo shell) · Sv = medio (livello agentivo) ·
-            ST = alto (livello temporale) · SC = massimo (sopra C)
+            ST = alto (livello temporale) · SC = massimo (sopra C)${hasCandidates ? " · SN = aggiunto del nome" : ""}
           </div>
+
+          ${hasCandidates ? `
+          <div id="sn-selector-${i}" style="display:${a.sn_hint ? 'block' : 'none'}; margin-top:10px;">
+            <span class="adj-card-label">A quale nome si aggancia?</span>
+            <p style="font-size:0.82em;color:#7a6a5a;margin-bottom:6px;font-style:italic;">
+              L'aggiunto descrive una caratteristica specifica dell'entità riferita da questo nome.
+            </p>
+            <select name="sn_target_${i}"
+              style="font-family:Georgia,serif;font-size:0.9em;padding:5px 10px;
+                     border:1px solid #c8b99a;border-radius:4px;background:#fdfaf5;">
+              ${snOptions}
+            </select>
+          </div>` : ""}
         </div>
       `;
       lista.appendChild(card);
@@ -899,6 +928,13 @@ HTML = """
     const role = document.querySelector(`input[name="role_${i}"]:checked`)?.value;
     const row = document.getElementById(`attach-row-${i}`);
     if (row) row.style.display = (role === "aggiunto") ? "block" : "none";
+    if (role === "aggiunto") aggiornaSnSelector(i);
+  }
+
+  function aggiornaSnSelector(i) {
+    const attach = document.querySelector(`input[name="attach_${i}"]:checked`)?.value;
+    const sel = document.getElementById(`sn-selector-${i}`);
+    if (sel) sel.style.display = (attach === "SN") ? "block" : "none";
   }
 
   function confermAggiunti() {
@@ -907,7 +943,9 @@ HTML = """
     _pendingAggiunti.forEach((a, i) => {
       const role   = document.querySelector(`input[name="role_${i}"]:checked`)?.value   || a.heuristic;
       const attach = document.querySelector(`input[name="attach_${i}"]:checked`)?.value || "Sv";
-      choices[a.token_id] = {role, attach};
+      const snSel  = document.querySelector(`select[name="sn_target_${i}"]`);
+      const sn_target = (attach === "SN" && snSel) ? parseInt(snSel.value) : null;
+      choices[a.token_id] = {role, attach, sn_target};
     });
     _pendingAggiunti = [];
     genera(currentTipoVerbo, choices);
@@ -1199,7 +1237,14 @@ def analizza():
             adjunct_choices = {}
         else:
             # Seconda volta: l'utente ha già scelto
-            adjunct_choices = {int(k): v for k, v in adjunct_choices_raw.items()}
+            adjunct_choices = {
+                int(k): {
+                    "role":      v.get("role"),
+                    "attach":    v.get("attach", "Sv"),
+                    "sn_target": v.get("sn_target"),
+                }
+                for k, v in adjunct_choices_raw.items()
+            }
 
         tree = build_tp(tokens, tipo_verbo=tipo_verbo, adjunct_choices=adjunct_choices)
         svg = tree_to_svg(tree, title=frase, animate=True)
