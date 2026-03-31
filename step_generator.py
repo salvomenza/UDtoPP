@@ -1,4 +1,4 @@
-# ver. 24
+# ver. 25
 """
 step_generator.py
 Genera la sequenza di passi per la costruzione passo-passo dell'albero chomskiano.
@@ -6,6 +6,9 @@ Ogni passo è un dizionario con:
   - 'tree': sottoalbero parziale (Node)
   - 'comment': testo esplicativo
   - 'title': titolo breve del passo
+
+Ver. 25: generate_steps() accetta adjunct_choices per gestire
+aggiunti a livelli diversi (SV / Sv / ST / SC) in base alla scelta utente.
 """
 
 from copy import deepcopy
@@ -241,10 +244,14 @@ def reset_step_state():
     _prev_step_sigs = set()
 
 
-def generate_steps(tokens, tipo_verbo=None):
+def generate_steps(tokens, tipo_verbo=None, adjunct_choices=None):
     """
     Genera la lista di passi per la costruzione dell'albero.
     Restituisce lista di dict: {title, comment, tree}
+
+    adjunct_choices: dict {token_id: {"role": "argomento"|"aggiunto",
+                                       "attach": "SV"|"Sv"|"ST"|"SC"}}
+    Se None o vuoto, tutti gli obl/advmod vanno a Sv (compatibile ver. 24).
     """
     root = next((t for t in tokens if t["deprel"] == "root"), None)
     if not root:
@@ -311,6 +318,44 @@ def generate_steps(tokens, tipo_verbo=None):
     adj_obl_tokens = [t for t in obl_tokens if not is_wh_token(t)]
     advmod_tokens = [t for t in tokens
                      if t["deprel"] == "advmod" and t["head"] == root["id"]]
+
+    # ── Classificazione aggiunti per livello (ver. 25) ───────────────────────
+    adjunct_choices = adjunct_choices or {}
+    # adj_by_attach_steps: aggiunti raggruppati per livello, pronti per i passi
+    adj_by_attach_steps = {"SV": [], "Sv": [], "ST": [], "SC": []}
+
+    for t in adj_obl_tokens:
+        choice = adjunct_choices.get(t["id"], {})
+        role   = choice.get("role", "aggiunto")
+        attach = choice.get("attach", "Sv")
+        if role == "aggiunto":
+            adj_by_attach_steps.setdefault(attach, []).append(t)
+        # argomenti obl: non generano passi distinti per ora
+
+    for t in advmod_tokens:
+        choice = adjunct_choices.get(t["id"], {})
+        role   = choice.get("role", "aggiunto")
+        attach = choice.get("attach", "Sv")
+        if role == "aggiunto":
+            adj_by_attach_steps.setdefault(attach, []).append(t)
+
+    # helper per costruire XP aggiunto
+    def _build_adj_xp(obl_t):
+        case_t2 = next((t for t in tokens
+                        if t["deprel"] == "case" and t["head"] == obl_t["id"]), None)
+        if obl_t.get("upos") == "ADV":
+            return build_advp(obl_t), f"SAvv('{obl_t['form']}')"
+        elif case_t2:
+            return build_pp(case_t2, obl_t, tokens), f"SP('{case_t2['form']} {obl_t['form']}')"
+        else:
+            return build_dp(obl_t, tokens), f"SD('{obl_t['form']}')"
+
+    _attach_desc = {
+        "SV": "SV — aggiunto basso, dentro lo shell verbale (scope ristretto)",
+        "Sv": "Sv — aggiunto medio, livello agentivo/eventuale",
+        "ST": "ST — aggiunto alto, livello temporale (scope su tutta la proposizione)",
+        "SC": "SC — aggiunto massimale, sopra il complementizzatore",
+    }
 
     wh_case_token = None
     wh_noun_token = None
@@ -790,30 +835,32 @@ def generate_steps(tokens, tipo_verbo=None):
     else:
         sv_shell.children = [deepcopy(v_prime)]
 
-    # Aggiunti a Sv
+    # ── Aggiunti per livello (ver. 25) ──────────────────────────────────────
     current = sv_shell
-    for obl_t in adj_obl_tokens:
-        case_t2 = next((t for t in tokens
-                        if t["deprel"] == "case" and t["head"] == obl_t["id"]), None)
-        pp = build_pp(case_t2, obl_t, tokens) if case_t2 else build_dp(obl_t, tokens)
+
+    # Livello SV (basso — per ora sdoppia a Sv, TODO: integrare in shell)
+    for obl_t in adj_by_attach_steps.get("SV", []):
+        xp, xp_label = _build_adj_xp(obl_t)
         outer = Node("Sv")
-        outer.children = [current, pp]
+        outer.children = [current, xp]
         steps.append(make_step(
-            f"Merge: aggiunto SP → Sv",
-            f"SP('{obl_t['form']}') entra come aggiunto a Sv: "
-            f"struttura a sdoppiamento Sv → Sv + SP.",
+            f"Merge: aggiunto {xp_label} → SV",
+            f"{xp_label} entra come <b>aggiunto basso</b> ({_attach_desc['SV']}). "
+            f"Struttura a sdoppiamento: Sv → Sv + {xp_label}.",
             outer
         ))
         current = outer
 
-    for adv_t in advmod_tokens:
-        advp = build_advp(adv_t)
+    # Livello Sv (default)
+    for obl_t in adj_by_attach_steps.get("Sv", []):
+        xp, xp_label = _build_adj_xp(obl_t)
         outer = Node("Sv")
-        outer.children = [current, advp]
+        outer.children = [current, xp]
         steps.append(make_step(
-            f"Merge: aggiunto SAvv → Sv",
-            f"SAvv('{adv_t['form']}') entra come aggiunto a Sv: "
-            f"struttura a sdoppiamento Sv → Sv + SAvv.",
+            f"Merge: aggiunto {xp_label} → Sv",
+            f"{xp_label} entra come <b>aggiunto</b> ({_attach_desc['Sv']}). "
+            f"Struttura a sdoppiamento: Sv → Sv + {xp_label}. "
+            f"L'aggiunto non riceve ruolo tematico da v, ma modifica l'evento.",
             outer
         ))
         current = outer
@@ -931,6 +978,20 @@ def generate_steps(tokens, tipo_verbo=None):
 
     st_for_cp = st_full if (subj_dp or tipo_verbo == "transitivo") else t_prime
 
+    # ── Aggiunti a ST (ver. 25) ──────────────────────────────────────────────
+    for obl_t in adj_by_attach_steps.get("ST", []):
+        xp, xp_label = _build_adj_xp(obl_t)
+        outer_st = Node("ST")
+        outer_st.children = [st_for_cp, xp]
+        steps.append(make_step(
+            f"Merge: aggiunto {xp_label} → ST",
+            f"{xp_label} entra come <b>aggiunto alto</b> ({_attach_desc['ST']}). "
+            f"Struttura a sdoppiamento: ST → ST + {xp_label}. "
+            f"A questo livello l'aggiunto ha scope su soggetto, aspetto ed evento.",
+            outer_st
+        ))
+        st_for_cp = outer_st
+
     # Passo 8: movimento wh a spec-SC
     if wh_obl:
         wh_xp = None
@@ -965,5 +1026,33 @@ def generate_steps(tokens, tipo_verbo=None):
             f"Rimane una traccia t_{wh_index} nella posizione originaria.",
             sc
         ))
+
+        # Aggiunti a SC (ver. 25) — sopra la proiezione wh
+        sc_top = sc
+        for obl_t in adj_by_attach_steps.get("SC", []):
+            xp, xp_label = _build_adj_xp(obl_t)
+            outer_sc = Node("SC")
+            outer_sc.children = [sc_top, xp]
+            steps.append(make_step(
+                f"Merge: aggiunto {xp_label} → SC",
+                f"{xp_label} entra come <b>aggiunto massimale</b> ({_attach_desc['SC']}). "
+                f"Struttura a sdoppiamento: SC → SC + {xp_label}.",
+                outer_sc
+            ))
+            sc_top = outer_sc
+
+    else:
+        # Nessun movimento wh: aggiunti SC direttamente sopra ST
+        for obl_t in adj_by_attach_steps.get("SC", []):
+            xp, xp_label = _build_adj_xp(obl_t)
+            outer_sc = Node("SC")
+            outer_sc.children = [st_for_cp, xp]
+            steps.append(make_step(
+                f"Merge: aggiunto {xp_label} → SC",
+                f"{xp_label} entra come <b>aggiunto massimale</b> ({_attach_desc['SC']}). "
+                f"Struttura a sdoppiamento: SC → SC + {xp_label}.",
+                outer_sc
+            ))
+            st_for_cp = outer_sc
 
     return steps
