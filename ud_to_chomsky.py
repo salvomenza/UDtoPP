@@ -1,4 +1,4 @@
-# ver. 25
+# ver. 26
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -12,8 +12,8 @@ Convenzioni:
 - Aggiunti: sdoppiamento XP → XP + YP, con livello scelto dall'utente
 - FR con [+wh] per interrogative; movimento wh a spec-CP
 - Ditransitivi: struttura larsoneana (oggetto diretto in spec-VP esterno)
-- obl con PronType=Int → wh; obl/advmod → utente sceglie argomento/aggiunto
-  e livello di aggiunzione (SV / Sv / ST / SC)
+- obl/advmod: utente sceglie argomento/aggiunto e livello (SV/Sv/ST/SC/SN)
+- SN: aggiunto nominale, sdoppia il SN della testa scelta dall'utente
 """
 
 from dataclasses import dataclass, field
@@ -243,11 +243,27 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
                                     child.children[i] = outer_np
                                     break
         else:
-            d = Node("D", is_head=True, color="#2c1e0f")
-            word = Node(noun_token["form"], word=noun_token["form"],
-                        is_head=True, color="#2c1e0f")
-            d.children = [word]
-            dp.children = [d]
+            # Nessun determinante.
+            # PROPN/PRON: struttura piatta  SD → D → forma
+            # NOUN:       struttura con SN  SD → D(∅) + SN → N' → N
+            if noun_token["upos"] in ("PROPN", "PRON"):
+                d = Node("D", is_head=True, color="#2c1e0f")
+                word = Node(noun_token["form"], word=noun_token["form"],
+                            is_head=True, color="#2c1e0f")
+                d.children = [word]
+                dp.children = [d]
+            else:
+                # Nome comune senza articolo (es. "pietà", costruzioni partitive)
+                d = Node("D", is_head=True, color="#2c1e0f")
+                d_word = Node("∅", word="∅", is_head=True, color="#2c1e0f")
+                d.children = [d_word]
+                n = Node("N", is_head=True, color="#2c1e0f")
+                n_word = Node(noun_token["form"], word=noun_token["form"],
+                              is_head=True, color="#2c1e0f")
+                n.children = [n_word]
+                np = Node("SN", color="#2c1e0f")
+                np.children = [n]
+                dp.children = [d, np]
 
     return dp
 
@@ -739,10 +755,11 @@ def prune_single_child_bars(node):
 def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
     """
     adjunct_choices: dict {token_id: {"role": "argomento"|"aggiunto",
-                                       "attach": "SV"|"Sv"|"ST"|"SC"}}
-    Prodotto da adjunct_detector.py e passato da app.py dopo la scelta utente.
-    Se None o vuoto, tutti gli obl/advmod vengono trattati come aggiunti a Sv
-    (comportamento identico alla ver. 24).
+                                       "attach": "SV"|"Sv"|"ST"|"SC"|"SN",
+                                       "sn_target": int|None}}
+    Se attach=="SN", sn_target indica il token_id del nome a cui agganciare
+    l'aggiunto come sdoppiamento di SN.
+    Se None o vuoto, comportamento identico alla ver. 24.
     """
     root = next((t for t in tokens if t["deprel"] == "root"), None)
     if not root:
@@ -830,15 +847,11 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
     advmod_tokens = [t for t in tokens
                      if t["deprel"] == "advmod" and t["head"] == root["id"]]
 
-    # ── Classificazione argomenti/aggiunti per livello (ver. 25) ────────────
-    # adjunct_choices = {token_id: {"role": "argomento"|"aggiunto",
-    #                                "attach": "SV"|"Sv"|"ST"|"SC"}}
+    # ── Classificazione argomenti/aggiunti per livello (ver. 26) ────────────
     adjunct_choices = adjunct_choices or {}
 
-    # arg_obl_tokens: obl/advmod classificati come argomenti (per uso futuro)
     arg_obl_tokens = []
-    # adj_by_attach: aggiunti raggruppati per livello di aggiunzione
-    adj_by_attach = {"SV": [], "Sv": [], "ST": [], "SC": []}
+    adj_by_attach  = {"SV": [], "Sv": [], "ST": [], "SC": [], "SN": []}
 
     for t in adj_obl_tokens:
         choice = adjunct_choices.get(t["id"], {})
@@ -847,14 +860,18 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
         if role == "argomento":
             arg_obl_tokens.append(t)
         else:
-            adj_by_attach.setdefault(attach, []).append(t)
+            adj_by_attach.setdefault(attach, []).append(
+                (t, choice.get("sn_target"))
+            )
 
     for t in advmod_tokens:
         choice = adjunct_choices.get(t["id"], {})
         role   = choice.get("role", "aggiunto")
         attach = choice.get("attach", "Sv")
         if role == "aggiunto":
-            adj_by_attach.setdefault(attach, []).append(t)
+            adj_by_attach.setdefault(attach, []).append(
+                (t, choice.get("sn_target"))
+            )
         else:
             arg_obl_tokens.append(t)
 
@@ -1160,7 +1177,29 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
                                 color=color_for(verb_index))]
         main_complement = vp_shell
 
-    # ── Aggiunti SP/Avv per livello (ver. 25) ───────────────────────────────
+    # ── Argomenti obl (PP argomento, es. "parlare a qn") — ver. 26 ──────────
+    for obl_t in arg_obl_tokens:
+        case_t = next(
+            (t for t in tokens
+             if t["deprel"] == "case" and t["head"] == obl_t["id"]),
+            None
+        )
+        pp = build_pp(case_t, obl_t, tokens) if case_t else build_dp(obl_t, tokens)
+        def _insert_pp_in_sv(node, pp_node):
+            if node.label == "SV":
+                sv_child = next((c for c in node.children if c.label == "SV"), None)
+                if sv_child:
+                    _insert_pp_in_sv(sv_child, pp_node)
+                else:
+                    node.children.append(pp_node)
+            else:
+                for child in node.children:
+                    if child.label in ("SV", "Sv", "SAsp"):
+                        _insert_pp_in_sv(child, pp_node)
+                        break
+        _insert_pp_in_sv(main_complement, pp)
+
+    # ── Aggiunti SP/Avv per livello (ver. 26) ───────────────────────────────
 
     def _build_adjunct_xp(obl_t):
         """Costruisce il nodo XP per un aggiunto (SP, SAvv o SD)."""
@@ -1176,16 +1215,60 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
         else:
             return build_dp(obl_t, tokens)
 
-    # Livello Sv (default — comportamento ver. 24)
-    for obl_t in adj_by_attach.get("Sv", []):
+    def _attach_to_sn(root_node, sn_target_id, xp):
+        """
+        Cerca il SN che contiene il token sn_target_id e lo sdoppia:
+          SN → SN + XP
+        Restituisce True se trovato e modificato.
+        """
+        def _sn_contains_id(node, tid):
+            tok = next((t for t in tokens if t["id"] == tid), None)
+            if tok is None:
+                return False
+            for child in node.children:
+                if child.word == tok["form"]:
+                    return True
+                if _sn_contains_id(child, tid):
+                    return True
+            return False
+
+        def _find_and_attach(node):
+            for i, child in enumerate(node.children):
+                if child.label == "SN" and _sn_contains_id(child, sn_target_id):
+                    outer = Node("SN", color="#2c1e0f")
+                    outer.children = [child, xp]
+                    node.children[i] = outer
+                    return True
+                if _find_and_attach(child):
+                    return True
+            return False
+
+        return _find_and_attach(root_node)
+
+    # Livello SN (aggiunto nominale — ver. 26)
+    for (obl_t, sn_target_id) in adj_by_attach.get("SN", []):
+        xp = _build_adjunct_xp(obl_t)
+        found = False
+        if sn_target_id:
+            if subj_dp:
+                found = _attach_to_sn(subj_dp, sn_target_id, xp)
+            if not found:
+                found = _attach_to_sn(main_complement, sn_target_id, xp)
+        if not found:
+            # Fallback: aggancia a Sv
+            outer = Node("Sv")
+            outer.children = [main_complement, xp]
+            main_complement = outer
+
+    # Livello Sv (default)
+    for (obl_t, _) in adj_by_attach.get("Sv", []):
         xp = _build_adjunct_xp(obl_t)
         outer = Node("Sv")
         outer.children = [main_complement, xp]
         main_complement = outer
 
-    # Livello SV (basso — dentro lo shell; per ora sdoppia come Sv,
-    # TODO: integrare dentro build_vp_shell in versione futura)
-    for obl_t in adj_by_attach.get("SV", []):
+    # Livello SV (basso — per ora sdoppia come Sv)
+    for (obl_t, _) in adj_by_attach.get("SV", []):
         xp = _build_adjunct_xp(obl_t)
         outer = Node("Sv")
         outer.children = [main_complement, xp]
@@ -1199,7 +1282,7 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
     tp.children = [subj_dp, t_prime] if subj_dp else [t_prime]
 
     # Livello ST (sopra il soggetto)
-    for obl_t in adj_by_attach.get("ST", []):
+    for (obl_t, _) in adj_by_attach.get("ST", []):
         xp = _build_adjunct_xp(obl_t)
         outer_st = Node("ST")
         outer_st.children = [tp, xp]
@@ -1208,7 +1291,7 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
     if wh_xp is not None:
         # Livello SC (sopra SC wh, se presente)
         pre_cp = tp
-        for obl_t in adj_by_attach.get("SC", []):
+        for (obl_t, _) in adj_by_attach.get("SC", []):
             xp = _build_adjunct_xp(obl_t)
             outer_sc = Node("SC")
             outer_sc.children = [pre_cp, xp]
@@ -1218,7 +1301,7 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
         return result
 
     # Livello SC (senza movimento wh)
-    for obl_t in adj_by_attach.get("SC", []):
+    for (obl_t, _) in adj_by_attach.get("SC", []):
         xp = _build_adjunct_xp(obl_t)
         outer_sc = Node("SC")
         outer_sc.children = [tp, xp]
