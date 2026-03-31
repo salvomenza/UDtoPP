@@ -1,4 +1,4 @@
-# ver. 26
+# ver. 26.1
 """
 adjunct_detector.py
 
@@ -147,17 +147,30 @@ def _heuristic(root_lemma: str, token: dict, tokens: list[dict],
     )
 
 
-def _sn_candidates(tokens: list[dict]) -> list[dict]:
+def _collect_subtree_ids(token_id: int, tokens: list[dict]) -> set[int]:
+    """Restituisce tutti gli id del sottoalbero radicato in token_id."""
+    ids = {token_id}
+    for t in tokens:
+        if t["head"] == token_id:
+            ids |= _collect_subtree_ids(t["id"], tokens)
+    return ids
+
+
+def _sn_candidates(tokens: list[dict],
+                   exclude_ids: set[int] | None = None) -> list[dict]:
     """
-    Restituisce la lista dei token nominali della frase che possono
-    fungere da testa di SN a cui agganciare un aggiunto nominale.
-    Criteri: upos NOUN/PROPN/PRON, esclusa la radice.
+    Restituisce i token nominali disponibili come testa SN.
+    Esclude la radice e i token in exclude_ids (sottoalbero del sintagma
+    ambiguo, per evitare che un nome si proponga come proprio modificatore).
     """
     root = next((t for t in tokens if t["deprel"] == "root"), None)
     root_id = root["id"] if root else -1
+    excl = exclude_ids or set()
     return [
         t for t in tokens
-        if t["upos"] in ("NOUN", "PROPN", "PRON") and t["id"] != root_id
+        if t["upos"] in ("NOUN", "PROPN", "PRON")
+        and t["id"] != root_id
+        and t["id"] not in excl
     ]
 
 
@@ -170,7 +183,6 @@ def detect_ambiguous_adjuncts(tokens: list[dict],
     from ud_to_chomsky import is_wh_token
 
     ner = _ner_entities(frase) if frase else {}
-    candidates = _sn_candidates(tokens)  # nomi a cui si può agganciare come SN
     ambiguous = []
 
     for t in tokens:
@@ -183,10 +195,11 @@ def detect_ambiguous_adjuncts(tokens: list[dict],
             if is_wh_token(t):
                 continue
             hint, reason = _heuristic(root["lemma"], t, tokens, ner)
-            # Suggerimento SN: preposizioni come "senza", "con", "di"
-            # introducono spesso modificatori nominali
             prep = _get_case_prep(t["id"], tokens)
             sn_hint = prep in {"senza", "con", "di", "da", "per"} if prep else False
+            # Escludi il sottoalbero del token stesso dai candidati SN
+            excl = _collect_subtree_ids(t["id"], tokens)
+            candidates = _sn_candidates(tokens, exclude_ids=excl)
             ambiguous.append({
                 "token_id":         t["id"],
                 "form":             _surface_form(t["id"], tokens),
@@ -195,15 +208,17 @@ def detect_ambiguous_adjuncts(tokens: list[dict],
                 "heuristic_reason": reason,
                 "role":             None,
                 "attach":           None,
-                "sn_target":        None,   # token_id del nome a cui agganciarsi
-                "sn_candidates":    [       # nomi disponibili come testa SN
+                "sn_target":        None,
+                "sn_candidates":    [
                     {"token_id": c["id"], "form": c["form"]}
                     for c in candidates
                 ],
-                "sn_hint":          sn_hint,  # True → suggerisci SN come opzione
+                "sn_hint":          sn_hint,
             })
 
         elif deprel == "advmod":
+            excl = _collect_subtree_ids(t["id"], tokens)
+            candidates = _sn_candidates(tokens, exclude_ids=excl)
             ambiguous.append({
                 "token_id":         t["id"],
                 "form":             _surface_form(t["id"], tokens),
