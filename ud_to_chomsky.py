@@ -1,7 +1,7 @@
 # ver. 26.3
 """
 ud_to_chomsky.py
-Converte una lista di token CoNLL-U in una struttura ad albero chomskiana
+Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
 
 Convenzioni:
 - SD invece di NP; little v (Sv); ST invece di IP
@@ -648,7 +648,7 @@ def build_vp_shell(verb_token, tokens, subj_token, obj_token,
         v_word = Node(v_label, word=v_label, index=cl_index,
                       is_head=True, color=cl_color)
     elif has_aux:
-        # Il participio sale a Asp, non a v°: v° contiene la traccia t_i
+        # Il participio sale a Asp, non resta in v°: v° contiene la traccia t_i
         v_word = Node("t", word="t", index=verb_index, is_trace=True,
                       is_head=True, color=v_color)
     else:
@@ -1165,11 +1165,14 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
         t_node = Node("T", is_head=True)
         t_node.children = [Node(aux_t["form"], word=aux_t["form"], is_head=True)]
 
-        # Fix 26.1 — Bug 3: avvolgi vp_shell in SAsp per il participio passato
+        # Fix 26.3: avvolgi vp_shell in SAsp per il participio passato.
+        # is_pronounced=True esplicito perché annotate_movements non può
+        # inferirlo (il default del dataclass è False).
         asp_p = Node("SAsp")
         asp = Node("Asp", is_head=True)
         asp_word = Node(root["form"], word=root["form"],
-                        index=verb_index, is_head=True, color=color_for(verb_index))
+                        index=verb_index, is_head=True,
+                        color=color_for(verb_index), is_pronounced=True)
         asp.children = [asp_word]
         asp_p.children = [asp, vp_shell]
         main_complement = asp_p
@@ -1374,7 +1377,8 @@ def annotate_movements(node, parent_label=None):
         elif not node.is_copy:
             # Nodi silenziosi (pro, PRO, ecc.): is_pronounced rimane False,
             # movement_type già impostato in build_pro_node se necessario
-            if node.is_pronounced is not False:
+            _is_silent = node.word in ("pro", "PRO", "pro_espl", "PRO_arb")
+            if not _is_silent:
                 node.is_pronounced = True
             # Assegna movement_type solo ai nodi pronunciati con indice
             if node.is_pronounced:
