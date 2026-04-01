@@ -1,4 +1,4 @@
-# ver. 26.6
+# ver. 26.7
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -156,7 +156,9 @@ def _build_relcl(rel_token, tokens):
        Struttura interna larsoneana: agente spec-Sv, oggetto spec-SV est.,
        compl. termine compl-SV int.
     """
-    rel_color = "#5a3a7a"
+    rel_color  = "#5a3a7a"
+    rel_v_idx  = "l"   # indice verbale della relativa — separato da "i" della principale
+    rel_v_color = color_for(rel_v_idx)
 
     # Filtra i token al solo sottoalbero della relativa
     rel_tokens = _subtree_tokens(rel_token["id"], tokens)
@@ -193,16 +195,10 @@ def _build_relcl(rel_token, tokens):
             None
         )
 
-    # ── Testa verbale ────────────────────────────────────────────────────────
-    v_rel = Node("V", is_head=True, color="#2c1e0f")
-    # Con ausiliare il verbo è traccia in V, sale ad Asp
-    if aux_rel:
-        v_rel.children = [Node("t", word="t", index="i", is_trace=True,
-                               is_head=True, color="#2c1e0f")]
-    else:
-        v_rel_word = Node(rel_token["form"], word=rel_token["form"],
-                          is_head=True, color="#2c1e0f")
-        v_rel.children = [v_rel_word]
+    # ── Testa verbale: traccia t_l in V (sale a T o Asp) ────────────────────
+    v_rel = Node("V", is_head=True, color=rel_v_color)
+    v_rel.children = [Node("t", word="t", index=rel_v_idx, is_trace=True,
+                           is_head=True, color=rel_v_color)]
 
     # ── Costruisce la struttura verbale interna ──────────────────────────────
 
@@ -210,14 +206,14 @@ def _build_relcl(rel_token, tokens):
         # Struttura larsoneana:
         # Sv → {t_k agente} + v'(v + SV_est)
         # SV_est → SD(obj) + V'(V_int + SV_int)
-        # SV_int → V(t_i) + SP({t_k compl.termine})
+        # SV_int → V(t_l) + SP({t_k compl.termine})
         t_obl = Node("t", word="t", index="k", is_trace=True,
                      is_head=True, color=rel_color)
 
         # SV interno: V + traccia complemento di termine
-        v_inner = Node("V", is_head=True, color="#2c1e0f")
-        v_inner.children = [Node("t", word="t", index="i", is_trace=True,
-                                 is_head=True, color="#2c1e0f")]
+        v_inner = Node("V", is_head=True, color=rel_v_color)
+        v_inner.children = [Node("t", word="t", index=rel_v_idx, is_trace=True,
+                                 is_head=True, color=rel_v_color)]
         sv_inner = Node("SV", color="#2c1e0f")
         sv_inner.children = [v_inner, t_obl]
 
@@ -233,10 +229,10 @@ def _build_relcl(rel_token, tokens):
         else:
             sv_ext.children = [v_prime_ext]
 
-        # v° con traccia verbale
-        v_little = Node("v", is_head=True, color="#2c1e0f")
-        v_little.children = [Node("t", word="t", index="i", is_trace=True,
-                                  is_head=True, color="#2c1e0f")]
+        # v° con traccia verbale t_l
+        v_little = Node("v", is_head=True, color=rel_v_color)
+        v_little.children = [Node("t", word="t", index=rel_v_idx, is_trace=True,
+                                  is_head=True, color=rel_v_color)]
         v_prime_rel_node = Node("v'", color="#2c1e0f")
         v_prime_rel_node.children = [v_little, sv_ext]
 
@@ -258,9 +254,9 @@ def _build_relcl(rel_token, tokens):
             sv.children = [v_rel, build_dp(obj_rel, rel_tokens)]
         else:
             sv.children = [v_rel]
-        v_little = Node("v", is_head=True, color="#2c1e0f")
-        v_little.children = [Node("t", word="t", index="i", is_trace=True,
-                                  is_head=True, color="#2c1e0f")]
+        v_little = Node("v", is_head=True, color=rel_v_color)
+        v_little.children = [Node("t", word="t", index=rel_v_idx, is_trace=True,
+                                  is_head=True, color=rel_v_color)]
         v_prime_rel_node = Node("v'", color="#2c1e0f")
         v_prime_rel_node.children = [v_little, sv]
         sv_shell = Node("Sv", color="#2c1e0f")
@@ -274,23 +270,25 @@ def _build_relcl(rel_token, tokens):
         sv_shell.children = [v_rel, t_obj]
 
     # ── T' e ST ──────────────────────────────────────────────────────────────
-    t_rel = Node("T", is_head=True, color="#2c1e0f")
+    t_rel = Node("T", is_head=True, color=rel_v_color)
     if aux_rel:
-        # Con ausiliare: T = ausiliare, Asp = participio
+        # Con ausiliare: T = ausiliare, Asp = participio pronunciato
         t_rel.children = [Node(aux_rel["form"], word=aux_rel["form"],
                                is_head=True, color="#2c1e0f")]
         asp_rel = Node("SAsp", color="#2c1e0f")
-        asp_head = Node("Asp", is_head=True, color="#2c1e0f")
+        asp_head = Node("Asp", is_head=True, color=rel_v_color)
         asp_word = Node(rel_token["form"], word=rel_token["form"],
-                        index="i", is_head=True, color="#2c1e0f",
+                        index=rel_v_idx, is_head=True, color=rel_v_color,
                         is_pronounced=True)
         asp_head.children = [asp_word]
         asp_rel.children = [asp_head, sv_shell]
         t_prime_rel = Node("T'", color="#2c1e0f")
         t_prime_rel.children = [t_rel, asp_rel]
     else:
+        # Senza ausiliare: T = forma verbale pronunciata con indice l
         t_rel.children = [Node(rel_token["form"], word=rel_token["form"],
-                               is_head=True, color="#2c1e0f")]
+                               index=rel_v_idx, is_head=True, color=rel_v_color,
+                               is_pronounced=True)]
         t_prime_rel = Node("T'", color="#2c1e0f")
         t_prime_rel.children = [t_rel, sv_shell]
 
@@ -1461,8 +1459,9 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
         )
         pp = build_pp(case_t, obl_t, tokens) if case_t else build_dp(obl_t, tokens)
 
+        # Struttura larsoneana: SV_est → SD(obj) + V'(V_int + SV_int(PP))
+        # Trova il SV più interno e lo ristruttura
         def _find_innermost_sv(node):
-            """Restituisce il nodo SV più profondo nell'albero."""
             best = None
             if node.label == "SV":
                 best = node
@@ -1474,7 +1473,27 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
 
         innermost = _find_innermost_sv(main_complement)
         if innermost is not None:
-            innermost.children.append(pp)
+            # Estrai la testa V e i figli esistenti
+            v_head = next((c for c in innermost.children if c.label == "V"), None)
+            other_children = [c for c in innermost.children if c.label != "V"]
+
+            if v_head and other_children:
+                # SV già ha oggetto: struttura larsoneana
+                # SV_est → SD(obj) + V'(V_old + SV_int(V_new + PP))
+                sv_int = Node("SV", color="#2c1e0f")
+                v_int = Node("V", is_head=True, color=v_head.color)
+                v_int.children = [Node("t", word="t",
+                                       index=v_head.children[0].index
+                                       if v_head.children else "i",
+                                       is_trace=True, is_head=True,
+                                       color=v_head.color)]
+                sv_int.children = [v_int, pp]
+                v_prime = Node("V'", color="#2c1e0f")
+                v_prime.children = [v_head, sv_int]
+                innermost.children = other_children + [v_prime]
+            else:
+                # SV senza oggetto: aggiunge PP come complemento diretto
+                innermost.children.append(pp)
 
     # ── Aggiunti SP/Avv per livello (ver. 26) ───────────────────────────────
 
