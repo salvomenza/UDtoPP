@@ -1,4 +1,4 @@
-# ver. 26.1
+# ver. 26.4.1
 """
 app.py
 Interfaccia web Flask per il generatore di alberi chomskiani.
@@ -730,8 +730,9 @@ HTML = """
     currentTipoVerbo = tipo;
     steps = [];
     currentStep = 0;
-    genera(tipo, _pendingIner);
+    _pendingConllu = _pendingIner;   // fix ver. 26.4: usa il canale corretto
     _pendingIner = null;
+    genera(tipo);
   }
 
   function scegliTipo(tipo) {
@@ -1227,7 +1228,7 @@ def analizza():
         # ── ver. 25: Rilevamento aggiunti ambigui ───────────────────────────
         if adjunct_choices_raw is None:
             # Prima volta: rilevamento automatico
-            ambiguous = detect_ambiguous_adjuncts(tokens)
+            ambiguous = detect_ambiguous_adjuncts(tokens, frase=frase)
             if ambiguous:
                 return jsonify({
                     "chiedi_aggiunti": True,
