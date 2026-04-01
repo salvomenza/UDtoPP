@@ -1,4 +1,4 @@
-# ver. 26.5
+# ver. 26.6
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -129,170 +129,216 @@ def is_wh_token(token):
 
 # ── Costruzione SC per frase relativa (acl:relcl) ────────────────────────────
 
+def _subtree_tokens(head_id, tokens):
+    """
+    Restituisce solo i token che appartengono al sottoalbero radicato in head_id,
+    inclusa la testa. Usato per isolare i token di una frase relativa.
+    """
+    def _collect(tid):
+        ids = {tid}
+        for t in tokens:
+            if t["head"] == tid:
+                ids |= _collect(t["id"])
+        return ids
+    ids = _collect(head_id)
+    return [t for t in tokens if t["id"] in ids]
+
+
 def _build_relcl(rel_token, tokens):
     """
-    Costruisce una SC per una frase relativa (acl:relcl) secondo l'analisi
-    con operatore (Donati/GB).
+    Costruisce una SC per una frase relativa (acl:relcl) — analisi con
+    operatore (Donati/GB). Usa solo i token del sottoalbero della relativa.
 
-    Tre casi in base al ruolo sintattico del relativo:
-
-    1. "che" soggetto (nsubj con PronType=Rel):
-       OP_k nasce in spec-Sv, sale a spec-ST (valuta uNum su T),
-       poi a spec-SC. Catena: spec-SC → {t}_k in spec-ST → {t}_k in spec-Sv.
-       C° = "che".
-
-    2. "che" oggetto (obj con PronType=Rel, o assente):
-       OP_k nasce in posizione oggetto di V, sale direttamente a spec-SC.
-       C° = "che".
-
-    3. Pronome relativo pieno: "cui", "quale" con preposizione (obl con PronType=Rel):
-       Il SP(a cui) nasce come complemento, sale a spec-SC.
-       C° = ∅.
+    Tre casi:
+    1. "che" soggetto: OP_k in spec-Sv → spec-ST → spec-SC; C°=che
+    2. "che" oggetto:  OP_k in compl-V → spec-SC; C°=che
+    3. Pronome obl ("a cui"): SP(a cui)_k in compl-SV → spec-SC; C°=∅
+       Struttura interna larsoneana: agente spec-Sv, oggetto spec-SV est.,
+       compl. termine compl-SV int.
     """
-    rel_color = "#5a3a7a"   # viola scuro per l'operatore/relativo
+    rel_color = "#5a3a7a"
 
-    # ── Identifica il tipo di relativo ──────────────────────────────────────
-    # Cerca il pronome relativo tra i dipendenti di rel_token
+    # Filtra i token al solo sottoalbero della relativa
+    rel_tokens = _subtree_tokens(rel_token["id"], tokens)
+
     rel_pron = next(
-        (t for t in tokens
+        (t for t in rel_tokens
          if t["head"] == rel_token["id"]
          and "PronType=Rel" in t.get("feats", "")),
         None
     )
-
-    # Ausiliare della relativa (se presente)
     aux_rel = next(
-        (t for t in tokens
+        (t for t in rel_tokens
          if t["head"] == rel_token["id"]
          and t["deprel"] in ("aux", "aux:pass")
          and t["lemma"] in ("avere", "essere")),
         None
     )
-
-    # Oggetto della relativa
     obj_rel = next(
-        (t for t in tokens
+        (t for t in rel_tokens
          if t["head"] == rel_token["id"] and t["deprel"] == "obj"),
         None
     )
 
-    # ── Determina il caso ───────────────────────────────────────────────────
-    is_subj_rel  = (rel_pron is not None
-                    and rel_pron["deprel"] in ("nsubj", "nsubj:pass"))
-    is_obj_rel   = (rel_pron is not None
-                    and rel_pron["deprel"] in ("obj",))
-    is_obl_rel   = (rel_pron is not None
-                    and rel_pron["deprel"] in ("obl", "iobj"))
+    is_subj_rel = (rel_pron is not None
+                   and rel_pron["deprel"] in ("nsubj", "nsubj:pass"))
+    is_obl_rel  = (rel_pron is not None
+                   and rel_pron["deprel"] in ("obl", "iobj"))
 
-    # ── Costruisce SV interno ───────────────────────────────────────────────
-    v_rel = Node("V", is_head=True, color="#2c1e0f")
-    v_rel_word = Node(rel_token["form"], word=rel_token["form"],
-                      is_head=True, color="#2c1e0f")
-    v_rel.children = [v_rel_word]
-
-    sv = Node("SV", color="#2c1e0f")
-
-    if is_subj_rel:
-        # Soggetto: traccia {t}_k in spec-Sv (posizione soggetto)
-        t_sv = Node("t", word="t", index="k", is_trace=True,
-                    is_head=True, color=rel_color)
-        v_prime_rel = Node("v'", color="#2c1e0f")
-        v_little_rel = Node("v", is_head=True, color="#2c1e0f")
-        v_little_rel.children = [Node("t", word="t", index="i", is_trace=True,
-                                      is_head=True, color="#2c1e0f")]
-        if obj_rel:
-            sv.children = [v_rel, build_dp(obj_rel, tokens)]
-        else:
-            sv.children = [v_rel]
-        sv_shell = Node("Sv", color="#2c1e0f")
-        sv_shell.children = [t_sv, v_prime_rel]
-        v_prime_rel.children = [v_little_rel, sv]
-
-    elif is_obl_rel:
-        # Complemento obliquo: traccia {t}_k in SV
+    case_rel = None
+    if is_obl_rel:
         case_rel = next(
-            (t for t in tokens
+            (t for t in rel_tokens
              if t["deprel"] == "case" and t["head"] == rel_pron["id"]),
             None
         )
+
+    # ── Testa verbale ────────────────────────────────────────────────────────
+    v_rel = Node("V", is_head=True, color="#2c1e0f")
+    # Con ausiliare il verbo è traccia in V, sale ad Asp
+    if aux_rel:
+        v_rel.children = [Node("t", word="t", index="i", is_trace=True,
+                               is_head=True, color="#2c1e0f")]
+    else:
+        v_rel_word = Node(rel_token["form"], word=rel_token["form"],
+                          is_head=True, color="#2c1e0f")
+        v_rel.children = [v_rel_word]
+
+    # ── Costruisce la struttura verbale interna ──────────────────────────────
+
+    if is_obl_rel:
+        # Struttura larsoneana:
+        # Sv → {t_k agente} + v'(v + SV_est)
+        # SV_est → SD(obj) + V'(V_int + SV_int)
+        # SV_int → V(t_i) + SP({t_k compl.termine})
         t_obl = Node("t", word="t", index="k", is_trace=True,
                      is_head=True, color=rel_color)
+
+        # SV interno: V + traccia complemento di termine
+        v_inner = Node("V", is_head=True, color="#2c1e0f")
+        v_inner.children = [Node("t", word="t", index="i", is_trace=True,
+                                 is_head=True, color="#2c1e0f")]
+        sv_inner = Node("SV", color="#2c1e0f")
+        sv_inner.children = [v_inner, t_obl]
+
+        # V' esterno
+        v_prime_ext = Node("V'", color="#2c1e0f")
+        v_prime_ext.children = [v_rel, sv_inner]
+
+        # SV esterno: SD(obj) in spec + V'
+        sv_ext = Node("SV", color="#2c1e0f")
         if obj_rel:
-            sv.children = [v_rel, build_dp(obj_rel, tokens), t_obl]
+            obj_dp = build_dp(obj_rel, rel_tokens)
+            sv_ext.children = [obj_dp, v_prime_ext]
         else:
-            sv.children = [v_rel, t_obl]
-        sv_shell = sv
+            sv_ext.children = [v_prime_ext]
+
+        # v° con traccia verbale
+        v_little = Node("v", is_head=True, color="#2c1e0f")
+        v_little.children = [Node("t", word="t", index="i", is_trace=True,
+                                  is_head=True, color="#2c1e0f")]
+        v_prime_rel_node = Node("v'", color="#2c1e0f")
+        v_prime_rel_node.children = [v_little, sv_ext]
+
+        # Sv: agente silenzioso (pro) in spec-Sv
+        sv_shell = Node("Sv", color="#2c1e0f")
+        pro_ag = Node("SD", color="#2c1e0f")
+        pro_d  = Node("D", is_head=True, color="#2c1e0f")
+        pro_d.children = [Node("pro", word="pro", is_head=True,
+                               color="#2c1e0f", is_pronounced=False)]
+        pro_ag.children = [pro_d]
+        sv_shell.children = [pro_ag, v_prime_rel_node]
+
+    elif is_subj_rel:
+        # "che" soggetto: traccia in spec-Sv
+        t_sv = Node("t", word="t", index="k", is_trace=True,
+                    is_head=True, color=rel_color)
+        sv = Node("SV", color="#2c1e0f")
+        if obj_rel:
+            sv.children = [v_rel, build_dp(obj_rel, rel_tokens)]
+        else:
+            sv.children = [v_rel]
+        v_little = Node("v", is_head=True, color="#2c1e0f")
+        v_little.children = [Node("t", word="t", index="i", is_trace=True,
+                                  is_head=True, color="#2c1e0f")]
+        v_prime_rel_node = Node("v'", color="#2c1e0f")
+        v_prime_rel_node.children = [v_little, sv]
+        sv_shell = Node("Sv", color="#2c1e0f")
+        sv_shell.children = [t_sv, v_prime_rel_node]
 
     else:
-        # Oggetto (o che senza nsubj esplicito): traccia {t}_k in posizione oggetto
+        # "che" oggetto: traccia in posizione oggetto
         t_obj = Node("t", word="t", index="k", is_trace=True,
                      is_head=True, color=rel_color)
-        sv.children = [v_rel, t_obj]
-        sv_shell = sv
+        sv_shell = Node("SV", color="#2c1e0f")
+        sv_shell.children = [v_rel, t_obj]
 
-    # ── Costruisce T' e ST ──────────────────────────────────────────────────
+    # ── T' e ST ──────────────────────────────────────────────────────────────
     t_rel = Node("T", is_head=True, color="#2c1e0f")
     if aux_rel:
-        t_rel_word = Node(aux_rel["form"], word=aux_rel["form"],
-                          is_head=True, color="#2c1e0f")
+        # Con ausiliare: T = ausiliare, Asp = participio
+        t_rel.children = [Node(aux_rel["form"], word=aux_rel["form"],
+                               is_head=True, color="#2c1e0f")]
+        asp_rel = Node("SAsp", color="#2c1e0f")
+        asp_head = Node("Asp", is_head=True, color="#2c1e0f")
+        asp_word = Node(rel_token["form"], word=rel_token["form"],
+                        index="i", is_head=True, color="#2c1e0f",
+                        is_pronounced=True)
+        asp_head.children = [asp_word]
+        asp_rel.children = [asp_head, sv_shell]
+        t_prime_rel = Node("T'", color="#2c1e0f")
+        t_prime_rel.children = [t_rel, asp_rel]
     else:
-        t_rel_word = Node(rel_token["form"], word=rel_token["form"],
-                          is_head=True, color="#2c1e0f")
-    t_rel.children = [t_rel_word]
-
-    t_prime_rel = Node("T'", color="#2c1e0f")
-    t_prime_rel.children = [t_rel, sv_shell]
+        t_rel.children = [Node(rel_token["form"], word=rel_token["form"],
+                               is_head=True, color="#2c1e0f")]
+        t_prime_rel = Node("T'", color="#2c1e0f")
+        t_prime_rel.children = [t_rel, sv_shell]
 
     st = Node("ST", color="#2c1e0f")
-
     if is_subj_rel:
-        # Soggetto: traccia {t}_k anche in spec-ST (tappa intermedia)
         t_st = Node("t", word="t", index="k", is_trace=True,
                     is_head=True, color=rel_color)
         st.children = [t_st, t_prime_rel]
     else:
         st.children = [t_prime_rel]
 
-    # ── Costruisce spec-SC (OP o pronome pieno) e SC ────────────────────────
+    # ── spec-SC: OP o SP pieno ────────────────────────────────────────────────
     sc = Node("SC", color="#2c1e0f")
 
     if is_obl_rel and rel_pron and case_rel:
-        # Pronome relativo pieno con preposizione: SP(a cui) in spec-SC
-        # C° = ∅
+        # SP(a cui) in spec-SC, C°=∅
         sp_rel = Node("SP", index="k", color=rel_color)
-        p_rel = Node("P", is_head=True, color=rel_color)
-        p_word = Node(case_rel["form"], word=case_rel["form"],
-                      is_head=True, color=rel_color)
-        p_rel.children = [p_word]
-        dp_rel = Node("D", is_head=True, color=rel_color)
-        dp_rel_word = Node(rel_pron["form"], word=rel_pron["form"],
-                           index="k", is_head=True, color=rel_color)
-        dp_rel.children = [dp_rel_word]
-        p_prime_rel = Node("P'", color=rel_color)
-        p_prime_rel.children = [p_rel, dp_rel]
-        sp_rel.children = [p_prime_rel]
+        p_rel  = Node("P", is_head=True, color=rel_color)
+        p_rel.children = [Node(case_rel["form"], word=case_rel["form"],
+                               is_head=True, color=rel_color)]
+        dp_cui = Node("SD", color=rel_color)
+        d_cui  = Node("D", is_head=True, color=rel_color)
+        d_cui.children = [Node(rel_pron["form"], word=rel_pron["form"],
+                               index="k", is_head=True, color=rel_color,
+                               is_pronounced=True)]
+        dp_cui.children = [d_cui]
+        p_prime = Node("P'", color=rel_color)
+        p_prime.children = [p_rel, dp_cui]
+        sp_rel.children = [p_prime]
+        sp_rel.movement_type = "sintagmatico"
 
         c_node = Node("C", is_head=True, color="#2c1e0f")
-        c_word = Node("∅", word="∅", is_head=True, color="#2c1e0f")
-        c_node.children = [c_word]
+        c_node.children = [Node("∅", word="∅", is_head=True, color="#2c1e0f")]
         c_prime = Node("C'", color="#2c1e0f")
         c_prime.children = [c_node, st]
         sc.children = [sp_rel, c_prime]
 
     else:
-        # OP nullo in spec-SC, C° = "che"
-        # Determina la forma di "che"
-        if rel_pron and rel_pron["upos"] == "PRON":
-            c_form = rel_pron["form"]
-        else:
-            c_form = "che"
-
+        # OP nullo in spec-SC, C°=che
+        c_form = rel_pron["form"] if rel_pron else "che"
         op_node = Node("OP", word="OP", index="k",
-                       is_head=True, color=rel_color)
+                       is_head=True, color=rel_color,
+                       is_pronounced=True,
+                       movement_type="sintagmatico")
 
         c_node = Node("C", is_head=True, color="#2c1e0f")
-        c_word_node = Node(c_form, word=c_form, is_head=True, color="#2c1e0f")
-        c_node.children = [c_word_node]
+        c_node.children = [Node(c_form, word=c_form,
+                                is_head=True, color="#2c1e0f")]
         c_prime = Node("C'", color="#2c1e0f")
         c_prime.children = [c_node, st]
         sc.children = [op_node, c_prime]
@@ -1576,8 +1622,9 @@ def annotate_movements(node, parent_label=None):
             _is_silent = node.word in ("pro", "PRO", "pro_espl", "PRO_arb")
             if not _is_silent:
                 node.is_pronounced = True
-            # Assegna movement_type solo ai nodi pronunciati con indice
-            if node.is_pronounced:
+            # Assegna movement_type solo se non già impostato alla costruzione
+            # (es. OP, SP relativo hanno movement_type preimpostato)
+            if node.is_pronounced and not node.movement_type:
                 idx = node.index or ""
                 if idx == "j":
                     node.movement_type = "soggetto"
