@@ -1,4 +1,4 @@
-# ver. 26.7
+# ver. 26.8
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -427,6 +427,12 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
                     pre_modifiers.append((t, "amod"))
                 else:
                     post_modifiers.append((t, "amod"))
+            elif dep == "advmod":
+                # Avverbio modificatore del nome (es. "soprattutto i cani")
+                if t["id"] < noun_id:
+                    pre_modifiers.append((t, "advmod"))
+                else:
+                    post_modifiers.append((t, "advmod"))
             elif dep == "nmod":
                 post_modifiers.append((t, "nmod"))
             elif dep == "appos":
@@ -440,15 +446,19 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
 
         # ── Prenominali: sdoppiamento SN a sinistra (più vicino al nome = più interno)
         # Invertiamo l'ordine: il più vicino al nome entra per primo (più interno)
-        for (mod_t, _) in reversed(pre_modifiers):
-            sa = Node("SA", color="#2c1e0f")
-            a_node = Node("A", is_head=True, color="#2c1e0f")
-            a_word = Node(mod_t["form"], word=mod_t["form"],
-                          is_head=True, color="#2c1e0f")
-            a_node.children = [a_word]
-            sa.children = [a_node]
+        for (mod_t, mod_type) in reversed(pre_modifiers):
+            if mod_type == "advmod":
+                xp = build_advp(mod_t)
+            else:
+                sa = Node("SA", color="#2c1e0f")
+                a_node = Node("A", is_head=True, color="#2c1e0f")
+                a_word = Node(mod_t["form"], word=mod_t["form"],
+                              is_head=True, color="#2c1e0f")
+                a_node.children = [a_word]
+                sa.children = [a_node]
+                xp = sa
             outer = Node("SN", color="#2c1e0f")
-            outer.children = [sa, np]   # SA a sinistra
+            outer.children = [xp, np]   # XP a sinistra
             np = outer
 
         # ── Postnominali: sdoppiamento SN a destra
@@ -461,6 +471,9 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
                 a_node.children = [a_word]
                 sa.children = [a_node]
                 xp = sa
+
+            elif mod_type == "advmod":
+                xp = build_advp(mod_t)
 
             elif mod_type == "nmod":
                 case_t = next(
