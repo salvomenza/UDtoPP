@@ -1,4 +1,4 @@
-# ver. 26.6
+# ver. 26.7
 """
 svg_render.py — v22
 Animazioni SVG:
@@ -81,12 +81,20 @@ def collect_nodes(node, registry):
         is_testa = mtype in ("verbo", "testa")
 
         if is_sintagmatico:
-            # Punto di arrivo: XP strutturale (word is None) con movement_type
-            # oppure nodo terminale pronunciato con movement_type preimpostato (OP)
+            # Punto di arrivo: solo XP strutturale (word is None)
+            #   oppure OP/SP relativi (word not None, is_pronounced=True,
+            #   ma NON is_copy — sono il punto di arrivo esplicito)
             # Punto di partenza: traccia (is_copy=True)
-            is_arrival = (node.word is None or
-                          getattr(node, "is_pronounced", False))
-            if is_arrival or node.is_copy:
+            is_special_arrival = (
+                node.word is not None
+                and getattr(node, "is_pronounced", False)
+                and not node.is_copy
+                and node.word in ("OP",)  # solo OP e pronomi relativi espliciti
+            )
+            is_xp_arrival = node.word is None
+            is_departure = node.is_copy
+
+            if is_xp_arrival or is_special_arrival or is_departure:
                 registry[key].append({
                     "x": node._x, "y": node._y,
                     "is_copy": node.is_copy,
