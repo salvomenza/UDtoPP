@@ -1,4 +1,4 @@
-# ver. 26.3
+# ver. 26.4
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -127,13 +127,61 @@ def is_wh_token(token):
     return "PronType=Int" in token.get("feats", "")
 
 
+# ── Costruzione SC per frase relativa (acl:relcl) ────────────────────────────
+
+def _build_relcl(rel_token, tokens):
+    """
+    Costruisce una SC semplificata per una frase relativa.
+    Struttura: SC → C(∅/che) + ST(semplificato)
+    Il contenuto interno è semplificato: mostriamo solo il verbo e l'oggetto
+    senza ricorrere ricorsivamente a build_tp (evita cicli).
+    """
+    # Testa relativa (es. "che")
+    rel_pron = next(
+        (t for t in tokens
+         if t["head"] == rel_token["id"] and t["deprel"] == "nsubj"
+         and t["upos"] == "PRON"),
+        None
+    )
+    c_form = rel_pron["form"] if rel_pron else "che"
+
+    sc = Node("SC", color="#2c1e0f")
+    c = Node("C", is_head=True, color="#2c1e0f")
+    c_word = Node(c_form, word=c_form, is_head=True, color="#2c1e0f")
+    c.children = [c_word]
+
+    # ST interno semplificato: T + V (+ obj se presente)
+    v_node = Node("V", is_head=True, color="#2c1e0f")
+    v_word = Node(rel_token["form"], word=rel_token["form"],
+                  is_head=True, color="#2c1e0f")
+    v_node.children = [v_word]
+
+    obj_t = next(
+        (t for t in tokens
+         if t["head"] == rel_token["id"] and t["deprel"] == "obj"),
+        None
+    )
+
+    sv = Node("SV", color="#2c1e0f")
+    if obj_t:
+        obj_dp = build_dp(obj_t, tokens)
+        sv.children = [v_node, obj_dp]
+    else:
+        sv.children = [v_node]
+
+    st = Node("ST", color="#2c1e0f")
+    st.children = [sv]
+
+    sc.children = [c, st]
+    return sc
+
+
 # ── Costruzione SD ───────────────────────────────────────────────────────────
 
 def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
     dp_color = color or (color_for(index) if index else "#2c1e0f")
 
     if is_trace:
-        # traccia: nodo t_j diretto, senza etichetta DP
         t_node = Node("t", word="t", index=index, is_trace=True,
                       is_head=True, color=dp_color)
         return t_node
@@ -170,100 +218,124 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
         dp.children = [d]
 
     else:
+        # ── Costruzione del nucleo N' ────────────────────────────────────────
+        n = Node("N", is_head=True, color="#2c1e0f")
+        n_word = Node(noun_token["form"], word=noun_token["form"],
+                      is_head=True, color="#2c1e0f")
+        n.children = [n_word]
+
+        n_prime = Node("N'", color="#2c1e0f")
+
+        if poss_token:
+            # Possessivo come spec di N': N' → SA(poss) + N
+            ap_poss = Node("SA", color="#2c1e0f")
+            ap_poss_word = Node(poss_token["form"], word=poss_token["form"],
+                                is_head=True, color="#2c1e0f")
+            ap_poss.children = [ap_poss_word]
+            n_prime.children = [ap_poss, n]
+        else:
+            n_prime.children = [n]
+
+        # SN iniziale contiene solo N'
+        np = Node("SN", color="#2c1e0f")
+        np.children = [n_prime]
+
+        # ── Raccoglie tutti gli aggiunti nominali in ordine lineare ──────────
+        # Aggiunti prenominali (id < noun_token["id"]): amod, nummod
+        # Aggiunti postnominali (id > noun_token["id"]): amod, nmod, appos, acl:relcl
+        noun_id = noun_token["id"]
+
+        pre_modifiers  = []  # (token, tipo) id < noun_id → vanno a sinistra di SN
+        post_modifiers = []  # (token, tipo) id > noun_id → vanno a destra di SN
+
+        for t in tokens:
+            if t["head"] != noun_id:
+                continue
+            dep = t["deprel"]
+            if dep in ("det", "det:poss", "case", "punct", "cc", "conj"):
+                continue  # già gestiti o irrilevanti
+            if dep in ("amod", "nummod"):
+                if t["id"] < noun_id:
+                    pre_modifiers.append((t, "amod"))
+                else:
+                    post_modifiers.append((t, "amod"))
+            elif dep == "nmod":
+                post_modifiers.append((t, "nmod"))
+            elif dep == "appos":
+                post_modifiers.append((t, "appos"))
+            elif dep == "acl:relcl":
+                post_modifiers.append((t, "acl:relcl"))
+
+        # Ordina per posizione lineare
+        pre_modifiers.sort(key=lambda x: x[0]["id"])
+        post_modifiers.sort(key=lambda x: x[0]["id"])
+
+        # ── Prenominali: sdoppiamento SN a sinistra (più vicino al nome = più interno)
+        # Invertiamo l'ordine: il più vicino al nome entra per primo (più interno)
+        for (mod_t, _) in reversed(pre_modifiers):
+            sa = Node("SA", color="#2c1e0f")
+            a_node = Node("A", is_head=True, color="#2c1e0f")
+            a_word = Node(mod_t["form"], word=mod_t["form"],
+                          is_head=True, color="#2c1e0f")
+            a_node.children = [a_word]
+            sa.children = [a_node]
+            outer = Node("SN", color="#2c1e0f")
+            outer.children = [sa, np]   # SA a sinistra
+            np = outer
+
+        # ── Postnominali: sdoppiamento SN a destra
+        for (mod_t, mod_type) in post_modifiers:
+            if mod_type == "amod":
+                sa = Node("SA", color="#2c1e0f")
+                a_node = Node("A", is_head=True, color="#2c1e0f")
+                a_word = Node(mod_t["form"], word=mod_t["form"],
+                              is_head=True, color="#2c1e0f")
+                a_node.children = [a_word]
+                sa.children = [a_node]
+                xp = sa
+
+            elif mod_type == "nmod":
+                case_t = next(
+                    (t for t in tokens
+                     if t["deprel"] == "case" and t["head"] == mod_t["id"]),
+                    None
+                )
+                # Gestisce anche acl:relcl dipendente dall'nmod
+                xp = build_pp(case_t, mod_t, tokens) if case_t else build_dp(mod_t, tokens)
+
+            elif mod_type == "appos":
+                xp = build_dp(mod_t, tokens)
+
+            elif mod_type == "acl:relcl":
+                # Frase relativa: SC con C(∅) e ST interno (semplificato)
+                xp = _build_relcl(mod_t, tokens)
+
+            else:
+                continue
+
+            outer = Node("SN", color="#2c1e0f")
+            outer.children = [np, xp]   # XP a destra
+            np = outer
+
+        # ── Assembla SD ──────────────────────────────────────────────────────
         if det_token:
             d = Node("D", is_head=True, color="#2c1e0f")
             d_word = Node(det_token["form"], word=det_token["form"],
                           is_head=True, color="#2c1e0f")
             d.children = [d_word]
-
-            np = Node("SN", color="#2c1e0f")
-
             if poss_token:
-                # SN → N' → SA(poss) + N
-                n_prime = Node("N'", color="#2c1e0f")
-                ap = Node("SA", color="#2c1e0f")
-                ap_word = Node(poss_token["form"], word=poss_token["form"],
-                               is_head=True, color="#2c1e0f")
-                ap.children = [ap_word]
-                n = Node("N", is_head=True, color="#2c1e0f")
-                n_word = Node(noun_token["form"], word=noun_token["form"],
-                              is_head=True, color="#2c1e0f")
-                n.children = [n_word]
-                n_prime.children = [ap, n]
-                np.children = [n_prime]
-                # spec presente → D' necessaria
+                # Con possessivo: D' necessaria
                 d_prime = Node("D'", color=dp_color)
                 d_prime.children = [d, np]
                 dp.children = [d_prime]
             else:
-                n = Node("N", is_head=True, color="#2c1e0f")
-                n_word = Node(noun_token["form"], word=noun_token["form"],
-                              is_head=True, color="#2c1e0f")
-                n.children = [n_word]
-                np.children = [n]
-                # no spec → SD → D + SN direttamente
                 dp.children = [d, np]
-
-            # aggiunti al nome (nmod): sdoppiamento SN → SN + PP
-            nmod_tokens = [t for t in tokens
-                           if t["deprel"] == "nmod" and t["head"] == noun_token["id"]]
-            for nmod_t in nmod_tokens:
-                case_t = next(
-                    (t for t in tokens
-                     if t["deprel"] == "case" and t["head"] == nmod_t["id"]),
-                    None
-                )
-                if case_t:
-                    pp = build_pp(case_t, nmod_t, tokens)
-                else:
-                    pp = build_dp(nmod_t, tokens)
-                # trova l'NP attuale dentro dp e sdoppia
-                # cerca SN tra i figli diretti o tramite D'
-                current_np = None
-                for child in dp.children:
-                    if child.label == "SN":
-                        current_np = child
-                        break
-                    elif child.label == "D'":
-                        for gc in child.children:
-                            if gc.label == "SN":
-                                current_np = gc
-                                break
-                if current_np is not None:
-                    outer_np = Node("SN", color="#2c1e0f")
-                    outer_np.children = [current_np, pp]
-                    # sostituisci current_np con outer_np
-                    for child in dp.children:
-                        if child.label == "SN":
-                            dp.children[dp.children.index(child)] = outer_np
-                            break
-                        elif child.label == "D'":
-                            for i, gc in enumerate(child.children):
-                                if gc.label == "SN":
-                                    child.children[i] = outer_np
-                                    break
         else:
-            # Nessun determinante.
-            # PROPN/PRON: struttura piatta  SD → D → forma
-            # NOUN:       struttura con SN  SD → D(∅) + SN → N' → N
-            if noun_token["upos"] in ("PROPN", "PRON"):
-                d = Node("D", is_head=True, color="#2c1e0f")
-                word = Node(noun_token["form"], word=noun_token["form"],
-                            is_head=True, color="#2c1e0f")
-                d.children = [word]
-                dp.children = [d]
-            else:
-                # Nome comune senza articolo (es. "pietà", costruzioni partitive)
-                d = Node("D", is_head=True, color="#2c1e0f")
-                d_word = Node("∅", word="∅", is_head=True, color="#2c1e0f")
-                d.children = [d_word]
-                n = Node("N", is_head=True, color="#2c1e0f")
-                n_word = Node(noun_token["form"], word=noun_token["form"],
-                              is_head=True, color="#2c1e0f")
-                n.children = [n_word]
-                np = Node("SN", color="#2c1e0f")
-                np.children = [n]
-                dp.children = [d, np]
+            # Senza determinante: D(∅)
+            d = Node("D", is_head=True, color="#2c1e0f")
+            d_word = Node("∅", word="∅", is_head=True, color="#2c1e0f")
+            d.children = [d_word]
+            dp.children = [d, np]
 
     return dp
 
