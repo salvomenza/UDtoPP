@@ -428,11 +428,9 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
                 else:
                     post_modifiers.append((t, "amod"))
             elif dep == "advmod":
-                # Avverbio modificatore del nome (es. "soprattutto i cani")
-                if t["id"] < noun_id:
-                    pre_modifiers.append((t, "advmod"))
-                else:
-                    post_modifiers.append((t, "advmod"))
+                # Avverbio focalizzatore: sdoppiamento SD esterno (gestito dopo)
+                pre_modifiers.append((t, "advmod")) if t["id"] < noun_id \
+                    else post_modifiers.append((t, "advmod"))
             elif dep == "nmod":
                 post_modifiers.append((t, "nmod"))
             elif dep == "appos":
@@ -448,17 +446,15 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
         # Invertiamo l'ordine: il più vicino al nome entra per primo (più interno)
         for (mod_t, mod_type) in reversed(pre_modifiers):
             if mod_type == "advmod":
-                xp = build_advp(mod_t)
-            else:
-                sa = Node("SA", color="#2c1e0f")
-                a_node = Node("A", is_head=True, color="#2c1e0f")
-                a_word = Node(mod_t["form"], word=mod_t["form"],
-                              is_head=True, color="#2c1e0f")
-                a_node.children = [a_word]
-                sa.children = [a_node]
-                xp = sa
+                continue  # gestito come sdoppiamento SD esterno, non SN
+            sa = Node("SA", color="#2c1e0f")
+            a_node = Node("A", is_head=True, color="#2c1e0f")
+            a_word = Node(mod_t["form"], word=mod_t["form"],
+                          is_head=True, color="#2c1e0f")
+            a_node.children = [a_word]
+            sa.children = [a_node]
             outer = Node("SN", color="#2c1e0f")
-            outer.children = [xp, np]   # XP a sinistra
+            outer.children = [sa, np]
             np = outer
 
         # ── Postnominali: sdoppiamento SN a destra
@@ -471,9 +467,6 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
                 a_node.children = [a_word]
                 sa.children = [a_node]
                 xp = sa
-
-            elif mod_type == "advmod":
-                xp = build_advp(mod_t)
 
             elif mod_type == "nmod":
                 case_t = next(
@@ -517,6 +510,22 @@ def build_dp(noun_token, tokens, index=None, is_trace=False, color=None):
             d_word = Node("∅", word="∅", is_head=True, color="#2c1e0f")
             d.children = [d_word]
             dp.children = [d, np]
+
+        # ── Sdoppiamento SD per avverbi focalizzatori (es. "soprattutto") ────
+        # SD_est → SAvv + SD_int  (a sinistra del SD completo)
+        adv_mods = sorted(
+            [(t, typ) for (t, typ) in pre_modifiers + post_modifiers
+             if typ == "advmod"],
+            key=lambda x: x[0]["id"]
+        )
+        for (adv_t, _) in adv_mods:
+            savv = build_advp(adv_t)
+            outer_dp = Node("SD", color=dp_color)
+            if adv_t["id"] < noun_id:
+                outer_dp.children = [savv, dp]   # SAvv a sinistra
+            else:
+                outer_dp.children = [dp, savv]   # SAvv a destra (raro)
+            dp = outer_dp
 
     return dp
 
