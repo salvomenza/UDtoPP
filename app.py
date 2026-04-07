@@ -1,4 +1,4 @@
-# ver. 26.4.1
+# ver. 26.5
 """
 app.py
 Interfaccia web Flask per il generatore di alberi chomskiani.
@@ -9,7 +9,7 @@ import requests
 import json
 from datetime import datetime
 
-VERSION = "0.26.1"
+VERSION = "0.26.5"
 BUILD_DATE = datetime.now().strftime("%d/%m/%Y")
 BUILD_TIME = datetime.now().strftime("%H:%M")
 from test_conllu import parse_conllu
@@ -24,6 +24,37 @@ app = Flask(__name__)
 
 UDPIPE_URL = "https://lindat.mff.cuni.cz/services/udpipe/api/process"
 UDPIPE_MODEL = "italian-isdt-ud-2.10-220711"
+
+
+def fix_rel_pron_deprel(tokens):
+    """
+    Corregge errori di UDPipe sui pronomi relativi nelle frasi relative.
+
+    Caso tipico: "il ragazzo che amavi" — UDPipe marca "che" come nsubj
+    del verbo relativo, ma la morfologia verbale (Person=1 o Person=2)
+    rivela che il soggetto è un pro implicito e "che" è in realtà obj.
+
+    Regola: se un pronome relativo (PronType=Rel) è marcato nsubj
+    e il verbo da cui dipende ha Person=1 o Person=2,
+    correggi il deprel a obj.
+
+    Person=3 è lasciato invariato (ambiguo: potrebbe essere soggetto
+    di terza persona o oggetto con pro soggetto di terza).
+    """
+    result = [dict(t) for t in tokens]  # copia mutabile
+    for t in result:
+        if "PronType=Rel" not in t.get("feats", ""):
+            continue
+        if t["deprel"] not in ("nsubj", "nsubj:pass"):
+            continue
+        # Trova il verbo di cui è dipendente
+        verb = next((v for v in result if v["id"] == t["head"]), None)
+        if verb is None:
+            continue
+        feats = verb.get("feats", "") or ""
+        if "Person=1" in feats or "Person=2" in feats:
+            t["deprel"] = "obj"
+    return result
 
 
 # ── HTML template ────────────────────────────────────────────────────────────
@@ -1203,6 +1234,7 @@ def analizza():
     # Converti e renderizza
     try:
         tokens = parse_conllu(conllu)
+        tokens = fix_rel_pron_deprel(tokens)  # corregge errori UDPipe sui relativi
 
         # Rilevamento ambiguità inergativo/inaccusativo (soggetto preverbale, no obj)
         if tipo_verbo is None:
@@ -1264,6 +1296,7 @@ def da_conllu():
     frase = data.get("frase", "")
     try:
         tokens = parse_conllu(conllu)
+        tokens = fix_rel_pron_deprel(tokens)
         tree = build_tp(tokens)
         svg = tree_to_svg(tree, title=frase, animate=True)
         return jsonify({"svg": svg})
