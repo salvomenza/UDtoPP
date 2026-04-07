@@ -1,4 +1,4 @@
-# ver. 26.9
+# ver. 26.11
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -176,9 +176,19 @@ def _build_relcl(rel_token, tokens):
          and t["lemma"] in ("avere", "essere")),
         None
     )
+    rel_pron_id = rel_pron["id"] if rel_pron else -1
     obj_rel = next(
         (t for t in rel_tokens
-         if t["head"] == rel_token["id"] and t["deprel"] == "obj"),
+         if t["head"] == rel_token["id"]
+         and t["deprel"] == "obj"
+         and t["id"] != rel_pron_id),
+        None
+    )
+    subj_rel = next(
+        (t for t in rel_tokens
+         if t["head"] == rel_token["id"]
+         and t["deprel"] in ("nsubj", "nsubj:pass")
+         and t["id"] != rel_pron_id),
         None
     )
 
@@ -194,6 +204,26 @@ def _build_relcl(rel_token, tokens):
              if t["deprel"] == "case" and t["head"] == rel_pron["id"]),
             None
         )
+
+    rel_subj_idx   = "m"
+    rel_subj_color = color_for(rel_subj_idx)
+
+    def _rel_subj_dp():
+        if subj_rel:
+            return build_dp(subj_rel, rel_tokens,
+                            index=rel_subj_idx, color=rel_subj_color)
+        pro = Node("SD", color="#2c1e0f")
+        pro_d = Node("D", is_head=True, color="#2c1e0f")
+        pro_d.children = [Node("pro", word="pro", is_head=True,
+                               color="#2c1e0f", is_pronounced=False)]
+        pro.children = [pro_d]
+        return pro
+
+    def _rel_subj_trace():
+        if subj_rel:
+            return Node("t", word="t", index=rel_subj_idx, is_trace=True,
+                        is_head=True, color=rel_subj_color)
+        return _rel_subj_dp()
 
     # ── Testa verbale: traccia t_l in V (sale a T o Asp) ────────────────────
     v_rel = Node("V", is_head=True, color=rel_v_color)
@@ -236,14 +266,9 @@ def _build_relcl(rel_token, tokens):
         v_prime_rel_node = Node("v'", color="#2c1e0f")
         v_prime_rel_node.children = [v_little, sv_ext]
 
-        # Sv: agente silenzioso (pro) in spec-Sv
+        # Sv: soggetto (esplicito o pro) in spec-Sv
         sv_shell = Node("Sv", color="#2c1e0f")
-        pro_ag = Node("SD", color="#2c1e0f")
-        pro_d  = Node("D", is_head=True, color="#2c1e0f")
-        pro_d.children = [Node("pro", word="pro", is_head=True,
-                               color="#2c1e0f", is_pronounced=False)]
-        pro_ag.children = [pro_d]
-        sv_shell.children = [pro_ag, v_prime_rel_node]
+        sv_shell.children = [_rel_subj_trace(), v_prime_rel_node]
 
     elif is_subj_rel:
         # "che" soggetto: traccia in spec-Sv
@@ -264,10 +289,19 @@ def _build_relcl(rel_token, tokens):
 
     else:
         # "che" oggetto: traccia in posizione oggetto
+        # Sv → soggetto(espl o pro) + v'(v + SV(V + {t_k}))
         t_obj = Node("t", word="t", index="k", is_trace=True,
                      is_head=True, color=rel_color)
-        sv_shell = Node("SV", color="#2c1e0f")
-        sv_shell.children = [v_rel, t_obj]
+        sv = Node("SV", color="#2c1e0f")
+        sv.children = [v_rel, t_obj]
+        v_little_obj = Node("v", is_head=True, color=rel_v_color)
+        v_little_obj.children = [Node("t", word="t", index=rel_v_idx,
+                                      is_trace=True, is_head=True,
+                                      color=rel_v_color)]
+        v_prime_obj = Node("v'", color="#2c1e0f")
+        v_prime_obj.children = [v_little_obj, sv]
+        sv_shell = Node("Sv", color="#2c1e0f")
+        sv_shell.children = [_rel_subj_trace(), v_prime_obj]
 
     # ── T' e ST ──────────────────────────────────────────────────────────────
     t_rel = Node("T", is_head=True, color=rel_v_color)
@@ -297,6 +331,8 @@ def _build_relcl(rel_token, tokens):
         t_st = Node("t", word="t", index="k", is_trace=True,
                     is_head=True, color=rel_color)
         st.children = [t_st, t_prime_rel]
+    elif subj_rel:
+        st.children = [_rel_subj_dp(), t_prime_rel]
     else:
         st.children = [t_prime_rel]
 
