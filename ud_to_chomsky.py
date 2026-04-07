@@ -1,4 +1,4 @@
-# ver. 26.10
+# ver. 26.9
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -176,21 +176,9 @@ def _build_relcl(rel_token, tokens):
          and t["lemma"] in ("avere", "essere")),
         None
     )
-    # obj_rel: oggetto lessicale vero — esclude il pronome relativo stesso
-    rel_pron_id = rel_pron["id"] if rel_pron else -1
     obj_rel = next(
         (t for t in rel_tokens
-         if t["head"] == rel_token["id"]
-         and t["deprel"] == "obj"
-         and t["id"] != rel_pron_id),
-        None
-    )
-    # Soggetto esplicito della relativa (diverso dal pronome relativo)
-    subj_rel = next(
-        (t for t in rel_tokens
-         if t["head"] == rel_token["id"]
-         and t["deprel"] in ("nsubj", "nsubj:pass")
-         and t["id"] != rel_pron_id),
+         if t["head"] == rel_token["id"] and t["deprel"] == "obj"),
         None
     )
 
@@ -206,18 +194,6 @@ def _build_relcl(rel_token, tokens):
              if t["deprel"] == "case" and t["head"] == rel_pron["id"]),
             None
         )
-
-    # ── Helper: costruisce spec-Sv (soggetto esplicito o pro silenzioso) ────
-    def _build_rel_subj():
-        if subj_rel:
-            return build_dp(subj_rel, rel_tokens)
-        else:
-            pro_ag = Node("SD", color="#2c1e0f")
-            pro_d  = Node("D", is_head=True, color="#2c1e0f")
-            pro_d.children = [Node("pro", word="pro", is_head=True,
-                                   color="#2c1e0f", is_pronounced=False)]
-            pro_ag.children = [pro_d]
-            return pro_ag
 
     # ── Testa verbale: traccia t_l in V (sale a T o Asp) ────────────────────
     v_rel = Node("V", is_head=True, color=rel_v_color)
@@ -260,12 +236,17 @@ def _build_relcl(rel_token, tokens):
         v_prime_rel_node = Node("v'", color="#2c1e0f")
         v_prime_rel_node.children = [v_little, sv_ext]
 
-        # Sv: soggetto (esplicito o pro silenzioso) in spec-Sv
+        # Sv: agente silenzioso (pro) in spec-Sv
         sv_shell = Node("Sv", color="#2c1e0f")
-        sv_shell.children = [_build_rel_subj(), v_prime_rel_node]
+        pro_ag = Node("SD", color="#2c1e0f")
+        pro_d  = Node("D", is_head=True, color="#2c1e0f")
+        pro_d.children = [Node("pro", word="pro", is_head=True,
+                               color="#2c1e0f", is_pronounced=False)]
+        pro_ag.children = [pro_d]
+        sv_shell.children = [pro_ag, v_prime_rel_node]
 
     elif is_subj_rel:
-        # "che" soggetto: traccia {t_k} in spec-Sv
+        # "che" soggetto: traccia in spec-Sv
         t_sv = Node("t", word="t", index="k", is_trace=True,
                     is_head=True, color=rel_color)
         sv = Node("SV", color="#2c1e0f")
@@ -282,21 +263,11 @@ def _build_relcl(rel_token, tokens):
         sv_shell.children = [t_sv, v_prime_rel_node]
 
     else:
-        # "che" oggetto: traccia {t_k} in posizione oggetto di V
-        # Sv → SD(soggetto) + v'(v + SV(V + {t_k}))
+        # "che" oggetto: traccia in posizione oggetto
         t_obj = Node("t", word="t", index="k", is_trace=True,
                      is_head=True, color=rel_color)
-        sv = Node("SV", color="#2c1e0f")
-        sv.children = [v_rel, t_obj]
-
-        v_little = Node("v", is_head=True, color=rel_v_color)
-        v_little.children = [Node("t", word="t", index=rel_v_idx, is_trace=True,
-                                  is_head=True, color=rel_v_color)]
-        v_prime_rel_node = Node("v'", color="#2c1e0f")
-        v_prime_rel_node.children = [v_little, sv]
-
-        sv_shell = Node("Sv", color="#2c1e0f")
-        sv_shell.children = [_build_rel_subj(), v_prime_rel_node]
+        sv_shell = Node("SV", color="#2c1e0f")
+        sv_shell.children = [v_rel, t_obj]
 
     # ── T' e ST ──────────────────────────────────────────────────────────────
     t_rel = Node("T", is_head=True, color=rel_v_color)
@@ -1678,15 +1649,17 @@ def annotate_movements(node, parent_label=None):
             elif idx == "k":
                 node.is_copy = True
                 node.movement_type = "sintagmatico"
+            elif idx == "l":
+                node.is_copy = True
+                node.movement_type = "verbo"
+            elif idx == "m":
+                node.is_copy = True
+                node.movement_type = "soggetto"
             node.is_trace = False
         elif not node.is_copy:
-            # Nodi silenziosi (pro, PRO, ecc.): is_pronounced rimane False,
-            # movement_type già impostato in build_pro_node se necessario
             _is_silent = node.word in ("pro", "PRO", "pro_espl", "PRO_arb")
             if not _is_silent:
                 node.is_pronounced = True
-            # Assegna movement_type solo se non già impostato alla costruzione
-            # (es. OP, SP relativo hanno movement_type preimpostato)
             if node.is_pronounced and not node.movement_type:
                 idx = node.index or ""
                 if idx == "j":
@@ -1695,6 +1668,10 @@ def annotate_movements(node, parent_label=None):
                     node.movement_type = "verbo"
                 elif idx == "k":
                     node.movement_type = "sintagmatico"
+                elif idx == "l":
+                    node.movement_type = "verbo"
+                elif idx == "m":
+                    node.movement_type = "soggetto"
     else:
         # Nodo strutturale con indice: propaga movement_type
         # ma NON per pro_espl (non si muove — è già in posizione finale)
@@ -1713,8 +1690,18 @@ def annotate_movements(node, parent_label=None):
                 if node.is_trace:
                     node.is_copy = True
                     node.is_trace = False
+            elif idx == "m":
+                node.movement_type = "soggetto"
+                if node.is_trace:
+                    node.is_copy = True
+                    node.is_trace = False
             elif idx == "k":
                 node.movement_type = "sintagmatico"
+                if node.is_trace:
+                    node.is_copy = True
+                    node.is_trace = False
+            elif idx == "l":
+                node.movement_type = "verbo"
                 if node.is_trace:
                     node.is_copy = True
                     node.is_trace = False
