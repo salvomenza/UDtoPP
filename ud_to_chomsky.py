@@ -1,4 +1,4 @@
-# ver. 26.11
+# ver. 26.13
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -212,18 +212,21 @@ def _build_relcl(rel_token, tokens):
         if subj_rel:
             return build_dp(subj_rel, rel_tokens,
                             index=rel_subj_idx, color=rel_subj_color)
-        pro = Node("SD", color="#2c1e0f")
-        pro_d = Node("D", is_head=True, color="#2c1e0f")
-        pro_d.children = [Node("pro", word="pro", is_head=True,
-                               color="#2c1e0f", is_pronounced=False)]
+        # pro silenzioso: ha indice m e movement_type preimpostato
+        # (si muove da spec-Sv a spec-ST per valutare uNum su T°)
+        pro = Node("SD", index=rel_subj_idx, color=rel_subj_color)
+        pro.movement_type = "soggetto"
+        pro_d = Node("D", is_head=True, color=rel_subj_color)
+        pro_d.children = [Node("pro", word="pro", index=rel_subj_idx,
+                               is_head=True, color=rel_subj_color,
+                               is_pronounced=False)]
         pro.children = [pro_d]
         return pro
 
     def _rel_subj_trace():
-        if subj_rel:
-            return Node("t", word="t", index=rel_subj_idx, is_trace=True,
-                        is_head=True, color=rel_subj_color)
-        return _rel_subj_dp()
+        # Sia per soggetto esplicito che per pro: traccia t_m in spec-Sv
+        return Node("t", word="t", index=rel_subj_idx, is_trace=True,
+                    is_head=True, color=rel_subj_color)
 
     # ── Testa verbale: traccia t_l in V (sale a T o Asp) ────────────────────
     v_rel = Node("V", is_head=True, color=rel_v_color)
@@ -740,12 +743,18 @@ def enrich_with_silent_subjects(tokens):
         )
         has_obj = any(t["deprel"] == "obj" and t["head"] == root["id"]
                       for t in tokens)
-        # inaccusativo presentativo: c'è un nsubj postverbale oppure un
-        # SD che funge da soggetto logico (UDPipe spesso lo analizza come
-        # nsubj comunque, ma per sicurezza controlliamo)
+        # Presentativo: inaccusativo con soggetto postverbale esplicito
+        # (es. "arriva un treno") — NON tutti i verbi intransitivi senza obj
+        has_postverbal_nsubj = any(
+            t["deprel"] in ("nsubj", "nsubj:pass")
+            and t["head"] == root["id"]
+            and t["id"] > root["id"]
+            for t in tokens
+        )
         is_presentative = (not has_obj and not is_weather
                            and root["upos"] == "VERB"
-                           and _verbform(root) == "Fin")
+                           and _verbform(root) == "Fin"
+                           and has_postverbal_nsubj)
 
         if is_weather or is_presentative:
             pro_type = "pro_espl"
@@ -1712,12 +1721,14 @@ def annotate_movements(node, parent_label=None):
         # Nodo strutturale con indice: propaga movement_type
         # ma NON per pro_espl (non si muove — è già in posizione finale)
         idx = node.index or ""
+        # Blocca solo pro_espl (espletivo) — non si muove mai.
+        # pro referenziale e PRO si muovono e devono ricevere movement_type.
         is_pro_espl = any(
-            c.word in ("pro_espl", "pro", "PRO", "PRO_arb")
+            c.word == "pro_espl"
             for c in node.children
             if c.word is not None
         ) or any(
-            any(gc.word in ("pro_espl",) for gc in c.children if gc.word is not None)
+            any(gc.word == "pro_espl" for gc in c.children if gc.word is not None)
             for c in node.children
         )
         if not is_pro_espl:
