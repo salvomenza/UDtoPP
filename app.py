@@ -1,4 +1,4 @@
-# ver. 26.5
+# ver. 26.4.1
 """
 app.py
 Interfaccia web Flask per il generatore di alberi chomskiani.
