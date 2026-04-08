@@ -1,4 +1,4 @@
-# ver. 26.13
+# ver. 26.14
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -14,6 +14,7 @@ Convenzioni:
 - Ditransitivi: struttura larsoneana (oggetto diretto in spec-VP esterno)
 - obl/advmod: utente sceglie argomento/aggiunto e livello (SV/Sv/ST/SC/SN)
 - SN: aggiunto nominale, sdoppia il SN della testa scelta dall'utente
+- wh obj (cosa/chi oggetto): SD wh in spec-SC, traccia t_k in compl-SV
 """
 
 from dataclasses import dataclass, field
@@ -1159,6 +1160,22 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
     # adj_obl_tokens: tutti gli obl non-wh (verranno classificati sotto)
     adj_obl_tokens = [t for t in obl_tokens if not is_wh_token(t)]
 
+    # Wh in posizione oggetto (es. "cosa mangia Giuseppe")
+    wh_obj = next(
+        (t for t in tokens
+         if t["deprel"] == "obj" and t["head"] == root["id"]
+         and is_wh_token(t)),
+        None
+    )
+    # Wh in posizione soggetto (es. "chi mangia?") — per ora solo rilevato,
+    # il movimento a spec-SC verrà gestito in una versione futura
+    wh_subj = next(
+        (t for t in tokens
+         if t["deprel"] in ("nsubj", "nsubj:pass") and t["head"] == root["id"]
+         and is_wh_token(t)),
+        None
+    )
+
     advmod_tokens = [t for t in tokens
                      if t["deprel"] == "advmod" and t["head"] == root["id"]]
 
@@ -1228,6 +1245,7 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
     wh_case_token = None
     wh_noun_token = None
     wh_xp = None
+    wh_is_obj = False   # True se il wh è in posizione oggetto
 
     if wh_obl:
         wh_case_token = next(
@@ -1242,6 +1260,17 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
         else:
             wh_xp = build_dp(wh_noun_token, tokens, index=wh_index,
                              color=color_for(wh_index))
+
+    elif wh_obj:
+        # Wh oggetto (es. "cosa"): SD wh in spec-SC, traccia t_k in compl-SV.
+        # obj_token viene azzerato per evitare che build_vp_shell inserisca
+        # il SD wh anche in posizione oggetto — la traccia è gestita internamente.
+        wh_noun_token = wh_obj
+        wh_xp = build_dp(wh_noun_token, tokens,
+                         index=wh_index, color=color_for(wh_index))
+        wh_xp.movement_type = "sintagmatico"
+        wh_is_obj = True
+        obj_token = None   # evita duplicazione in build_vp_shell
 
     # Soggetto: token esplicito oppure nodo pro/PRO silenzioso
     if subj_token:
@@ -1441,7 +1470,12 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
 
     elif aux_t:
         eff_obj = None
-        if has_clitic_obj:
+        if wh_is_obj:
+            # Traccia wh in posizione oggetto: token fittizio con indice k
+            eff_obj = {"id": -4, "form": "t", "lemma": "t",
+                       "upos": "PRON", "feats": f"Index={wh_index}",
+                       "head": root["id"], "deprel": "obj"}
+        elif has_clitic_obj:
             eff_obj = {"id": -1, "form": f"t_{cl_index}", "lemma": "t",
                        "upos": "PRON", "feats": f"Index={cl_index}",
                        "head": root["id"], "deprel": "obj"}
@@ -1486,7 +1520,11 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
 
     else:
         eff_obj = None
-        if has_clitic_obj:
+        if wh_is_obj:
+            eff_obj = {"id": -4, "form": "t", "lemma": "t",
+                       "upos": "PRON", "feats": f"Index={wh_index}",
+                       "head": root["id"], "deprel": "obj"}
+        elif has_clitic_obj:
             eff_obj = {"id": -1, "form": f"t_{cl_index}", "lemma": "t",
                        "upos": "PRON", "feats": f"Index={cl_index}",
                        "head": root["id"], "deprel": "obj"}
@@ -1771,15 +1809,46 @@ def print_tree(node, indent=0):
 # ── Test ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    from test_conllu import CONLLU_SAMPLES, parse_conllu
+    def parse_conllu(text):
+        tokens = []
+        for line in text.strip().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 8 or "." in parts[0] or "-" in parts[0]:
+                continue
+            tokens.append({
+                "id": int(parts[0]),
+                "form": parts[1],
+                "lemma": parts[2],
+                "upos": parts[3],
+                "feats": parts[5] if parts[5] != "_" else "",
+                "head": int(parts[6]),
+                "deprel": parts[7],
+            })
+        return tokens
 
-    for sentence, conllu in CONLLU_SAMPLES.items():
-        print(f"\n{'='*60}\n  {sentence}\n{'='*60}")
-        tokens = parse_conllu(conllu)
-        tree = build_tp(tokens)
-        print_tree(tree)
+    print(f"\n{'='*60}\n  cosa mangia Giuseppe\n{'='*60}")
+    conllu_cosa = """
+1\tcosa\tcosa\tPRON\tPQ\tPronType=Int\t2\tobj\t_\t_
+2\tmangia\tmangiare\tVERB\tV\tMood=Ind|Number=Sing|Person=3|Tense=Pres|VerbForm=Fin\t0\troot\t_\t_
+3\tGiuseppe\tGiuseppe\tPROPN\tSP\t_\t2\tnsubj\t_\tSpaceAfter=No
+"""
+    tokens = parse_conllu(conllu_cosa)
+    tree = build_tp(tokens)
+    print_tree(tree)
 
-    print(f"\n{'='*60}\n  A chi hai regalato la tua penna nel cortile?\n{'='*60}")
+    print(f"\n{'='*60}\n  cosa ha mangiato Giuseppe\n{'='*60}")
+    conllu_cosa_aux = """
+1\tcosa\tcosa\tPRON\tPQ\tPronType=Int\t3\tobj\t_\t_
+2\tha\tavere\tAUX\tVA\tMood=Ind|Number=Sing|Person=3|Tense=Pres\t3\taux\t_\t_
+3\tmangiato\tmangiare\tVERB\tV\tGender=Masc|Number=Sing|Tense=Past|VerbForm=Part\t0\troot\t_\t_
+4\tGiuseppe\tGiuseppe\tPROPN\tSP\t_\t3\tnsubj\t_\tSpaceAfter=No
+"""
+    tokens = parse_conllu(conllu_cosa_aux)
+    tree = build_tp(tokens)
+    print_tree(tree)
     conllu_wh = """
 1\tA\ta\tADP\tE\t_\t2\tcase\t_\t_
 2\tchi\tchi\tPRON\tPQ\tPronType=Int\t4\tobl\t_\t_
