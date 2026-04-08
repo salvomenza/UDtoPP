@@ -1,4 +1,4 @@
-# ver. 26.14
+# ver. 26.15
 """
 ud_to_chomsky.py
 Converte una lista di token CoNLL-U in una struttura ad albero chomskiana.
@@ -15,6 +15,7 @@ Convenzioni:
 - obl/advmod: utente sceglie argomento/aggiunto e livello (SV/Sv/ST/SC/SN)
 - SN: aggiunto nominale, sdoppia il SN della testa scelta dall'utente
 - wh obj (cosa/chi oggetto): SD wh in spec-SC, traccia t_k in compl-SV
+- wh avv (quando/dove/come/perché): preprocessing + elicitazione posizione base
 """
 
 from dataclasses import dataclass, field
@@ -122,6 +123,25 @@ def is_copular(tokens):
         return False
     has_cop = any(t["deprel"] == "cop" and t["head"] == root["id"] for t in tokens)
     return has_cop and root["upos"] != "VERB"
+
+
+def preprocess_wh_adverbs(tokens):
+    """
+    Preprocessing: riclassifica avverbi wh- interrogativi da 'advmod' ad
+    'advmod:wh' e aggiunge PronType=Int ai feats, così vengono riconosciuti
+    dal resto del sistema come elementi wh- (analoga alla correzione dei
+    pronomi relativi per le frasi relative).
+    """
+    WH_ADVS = {"quando", "dove", "come", "perché", "quanto", "come mai"}
+    for t in tokens:
+        if (t["deprel"] == "advmod"
+                and t["upos"] == "ADV"
+                and t["lemma"].lower() in WH_ADVS):
+            t["deprel"] = "advmod:wh"
+            feats = t.get("feats", "") or ""
+            if "PronType=Int" not in feats:
+                t["feats"] = (feats + "|PronType=Int").lstrip("|")
+    return tokens
 
 
 def is_wh_token(token):
@@ -1089,6 +1109,9 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
                 t["deprel"] = "obj"
                 break
 
+    # Preprocessing: avverbi wh- interrogativi (quando, dove, come, perché…)
+    tokens = preprocess_wh_adverbs(tokens)
+
     # Arricchimento con pro/PRO
     tokens, silent_nodes = enrich_with_silent_subjects(tokens)
 
@@ -1175,7 +1198,15 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
          and is_wh_token(t)),
         None
     )
+    # Wh avverbiale (quando, dove, come, perché…): già riclassificato da
+    # preprocess_wh_adverbs come advmod:wh con PronType=Int
+    wh_adv = next(
+        (t for t in tokens
+         if t["deprel"] == "advmod:wh" and t["head"] == root["id"]),
+        None
+    )
 
+    # advmod normali: esclude advmod:wh (già gestito come wh_adv)
     advmod_tokens = [t for t in tokens
                      if t["deprel"] == "advmod" and t["head"] == root["id"]]
 
@@ -1206,6 +1237,16 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
             )
         else:
             arg_obl_tokens.append(t)
+
+    # Avverbio wh- (advmod:wh): sempre aggiunto, posizione base scelta dall'utente.
+    # La traccia t_k verrà inserita nel livello scelto; wh_xp (SAvv pronunciato)
+    # salirà a spec-SC tramite wrap_cp.
+    if wh_adv:
+        wh_adv_choice = adjunct_choices.get(wh_adv["id"], {})
+        wh_adv_attach = wh_adv_choice.get("attach", "Sv")
+        adj_by_attach.setdefault(wh_adv_attach, []).append(
+            (wh_adv, None)
+        )
 
     aux_t = next(
         (t for t in tokens
@@ -1271,6 +1312,23 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
         wh_xp.movement_type = "sintagmatico"
         wh_is_obj = True
         obj_token = None   # evita duplicazione in build_vp_shell
+
+    elif wh_adv:
+        # Wh avverbiale (quando, dove, come, perché…):
+        # SAvv in spec-SC con indice k; la traccia resterà nella posizione
+        # base scelta dall'utente tramite il meccanismo di elicitazione
+        # degli aggiunti (adjunct_choices). Non azzeriamo nulla: la traccia
+        # viene inserita come aggiunto al livello scelto dall'utente.
+        wh_adv_color = color_for(wh_index)
+        wh_adv_xp = Node("SAvv", index=wh_index, color=wh_adv_color)
+        wh_adv_xp.movement_type = "sintagmatico"
+        adv_head = Node("Adv", is_head=True, color=wh_adv_color)
+        adv_word = Node(wh_adv["form"], word=wh_adv["form"],
+                        index=wh_index, is_head=True, color=wh_adv_color,
+                        is_pronounced=True)
+        adv_head.children = [adv_word]
+        wh_adv_xp.children = [adv_head]
+        wh_xp = wh_adv_xp
 
     # Soggetto: token esplicito oppure nodo pro/PRO silenzioso
     if subj_token:
@@ -1421,9 +1479,14 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
             t_subj.children = [t_subj_word]
             vp = Node("SV")
             vp.children = [v_node, t_subj]
-            # soggetto sale a spec-ST
-            subj_dp = build_dp(subj_token, tokens, index=subj_index,
-                               color=subj_color) if subj_token else None
+            # soggetto sale a spec-ST: token esplicito o pro silenzioso
+            if subj_token:
+                subj_dp = build_dp(subj_token, tokens, index=subj_index,
+                                   color=subj_color)
+            elif silent_subj_node:
+                subj_dp = silent_subj_node
+            else:
+                subj_dp = None
 
         main_complement = vp
 
@@ -1596,7 +1659,14 @@ def build_tp(tokens, tipo_verbo=None, adjunct_choices=None):
     # ── Aggiunti SP/Avv per livello (ver. 26) ───────────────────────────────
 
     def _build_adjunct_xp(obl_t):
-        """Costruisce il nodo XP per un aggiunto (SP, SAvv o SD)."""
+        """Costruisce il nodo XP per un aggiunto (SP, SAvv o SD).
+        Se il token è il wh avverbiale (advmod:wh), costruisce la traccia t_k."""
+        if obl_t.get("deprel") == "advmod:wh":
+            # Traccia dell'avverbio wh- nella posizione base scelta dall'utente
+            wh_tr_color = color_for(wh_index)
+            t_wh = Node("t", word="t", index=wh_index, is_trace=True,
+                        is_head=True, color=wh_tr_color)
+            return t_wh
         case_t = next(
             (t for t in tokens
              if t["deprel"] == "case" and t["head"] == obl_t["id"]),
