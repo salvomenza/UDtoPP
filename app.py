@@ -1,4 +1,4 @@
-# ver. 26.4.1
+# ver. 26.5.1
 """
 app.py
 Interfaccia web Flask per il generatore di alberi chomskiani.
@@ -9,11 +9,11 @@ import requests
 import json
 from datetime import datetime
 
-VERSION = "0.26.5"
+VERSION = "0.26.6"
 BUILD_DATE = datetime.now().strftime("%d/%m/%Y")
 BUILD_TIME = datetime.now().strftime("%H:%M")
 from test_conllu import parse_conllu
-from ud_to_chomsky import build_tp
+from ud_to_chomsky import build_tp, preprocess_wh_adverbs
 from svg_render import tree_to_svg
 from step_generator import generate_steps
 from adjunct_detector import detect_ambiguous_adjuncts
@@ -1235,6 +1235,7 @@ def analizza():
     try:
         tokens = parse_conllu(conllu)
         tokens = fix_rel_pron_deprel(tokens)  # corregge errori UDPipe sui relativi
+        tokens = preprocess_wh_adverbs(tokens)  # riclassifica wh avv (quando/dove/…)
 
         # Rilevamento ambiguità inergativo/inaccusativo (soggetto preverbale, no obj)
         if tipo_verbo is None:
@@ -1261,6 +1262,26 @@ def analizza():
         if adjunct_choices_raw is None:
             # Prima volta: rilevamento automatico
             ambiguous = detect_ambiguous_adjuncts(tokens, frase=frase)
+
+            # Aggiungi avverbi wh- (advmod:wh): sempre aggiunti, l'utente
+            # sceglie solo il livello di aggiunzione (posizione base).
+            root_tok = next((t for t in tokens if t["deprel"] == "root"), None)
+            if root_tok:
+                for t in tokens:
+                    if t["deprel"] == "advmod:wh" and t["head"] == root_tok["id"]:
+                        ambiguous.append({
+                            "token_id":       t["id"],
+                            "form":           t["form"],
+                            "deprel":         "advmod:wh",
+                            "heuristic":      "aggiunto",
+                            "heuristic_reason": (
+                                f"«{t['form']}» è un avverbio wh- interrogativo: "
+                                "si muove a spec-SC, ma nasce come aggiunto."
+                            ),
+                            "sn_candidates":  [],
+                            "sn_hint":        False,
+                        })
+
             if ambiguous:
                 return jsonify({
                     "chiedi_aggiunti": True,
@@ -1297,6 +1318,7 @@ def da_conllu():
     try:
         tokens = parse_conllu(conllu)
         tokens = fix_rel_pron_deprel(tokens)
+        tokens = preprocess_wh_adverbs(tokens)
         tree = build_tp(tokens)
         svg = tree_to_svg(tree, title=frase, animate=True)
         return jsonify({"svg": svg})
@@ -1316,6 +1338,7 @@ def passi():
     adjunct_choices = {int(k): v for k, v in adjunct_choices_raw.items()}
     try:
         tokens = parse_conllu(conllu)
+        tokens = preprocess_wh_adverbs(tokens)
         # Applica correzione tipo_verbo come in /analizza
         if tipo_verbo == "transitivo":
             root = next((t for t in tokens if t["deprel"] == "root"), None)
